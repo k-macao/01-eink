@@ -30,6 +30,19 @@
                 </div>
             </div>
         </fieldset>
+        <fieldset>
+            <legend>每天自动蓝牙更新</legend>
+            <div class="flex-container">
+                <div class="flex-group">
+                    <label for="chk-auto-update">启用自动更新</label>
+                    <input type="checkbox" id="chk-auto-update" onchange="toggleAutoUpdate()">
+                    <label for="time-auto-update">每日执行时间</label>
+                    <input type="time" id="time-auto-update" value="08:00" onchange="setAutoUpdateTime()">
+                    <button type="button" class="secondary" onclick="testAutoUpdate()">立即测试</button>
+                </div>
+            </div>
+            <div id="auto-status" style="margin-top:8px; font-size:0.9rem; color:#666;">自动更新：已停止</div>
+        </fieldset>
     </div>
     <script type="text/javascript" src="js/main.js"></script>
 </body>

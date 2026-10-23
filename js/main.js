@@ -239,6 +239,118 @@ function clearLog() {
   document.getElementById("log").innerHTML = '';
 }
 
+// ---------- 每天自动蓝牙更新 ----------
+let autoUpdateEnabled = false;
+let autoUpdateTime = "08:00"; // HH:MM
+let autoCheckTimerId = null;
+let lastAutoUpdateDate = ""; // YYYY-MM-DD，防止同天重复触发
+
+function toggleAutoUpdate() {
+  const chk = document.getElementById("chk-auto-update");
+  autoUpdateEnabled = chk.checked;
+  const status = document.getElementById("auto-status");
+  if (autoUpdateEnabled) {
+    status.textContent = "自动更新：已启用（每日 " + autoUpdateTime + "）";
+    startAutoUpdateChecker();
+    addLog("自动更新已启用，每日 " + autoUpdateTime + " 执行");
+  } else {
+    status.textContent = "自动更新：已停止";
+    stopAutoUpdateChecker();
+    addLog("自动更新已停止");
+  }
+}
+
+function setAutoUpdateTime() {
+  const inp = document.getElementById("time-auto-update");
+  autoUpdateTime = inp.value;
+  const status = document.getElementById("auto-status");
+  status.textContent = "自动更新：" + (autoUpdateEnabled ? "已启用（每日 " + autoUpdateTime + "）" : "已停止");
+  addLog("自动更新时间已设为 " + autoUpdateTime);
+  if (autoUpdateEnabled) {
+    startAutoUpdateChecker();
+  }
+}
+
+function startAutoUpdateChecker() {
+  stopAutoUpdateChecker();
+  // 每分钟检查一次是否到达设定时间
+  autoCheckTimerId = setInterval(() => {
+    checkAutoUpdate();
+  }, 60 * 1000);
+  // 立即检查一次（页面刚打开可能正好在设定时间附近）
+  checkAutoUpdate();
+}
+
+function stopAutoUpdateChecker() {
+  if (autoCheckTimerId != null) {
+    clearInterval(autoCheckTimerId);
+    autoCheckTimerId = null;
+  }
+}
+
+function checkAutoUpdate() {
+  if (!autoUpdateEnabled) return;
+  const now = new Date();
+  const hh = String(now.getHours()).padStart(2, "0");
+  const mm = String(now.getMinutes()).padStart(2, "0");
+  const curTime = hh + ":" + mm;
+  const curDate = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
+
+  // 只在设定时间整点触发，且同一天只执行一次
+  if (curTime === autoUpdateTime && curDate !== lastAutoUpdateDate) {
+    lastAutoUpdateDate = curDate;
+    addLog("到达每日自动更新时间 " + autoUpdateTime + "，开始自动蓝牙更新...");
+    runAutoUpdate();
+  }
+}
+
+async function runAutoUpdate() {
+  const status = document.getElementById("auto-status");
+  status.textContent = "自动更新：正在更新...";
+
+  try {
+    const connected = gattServer != null && gattServer.connected;
+
+    if (!connected && bleDevice == null) {
+      // 从未连接过，无法无手势自动弹出设备选择框
+      addLog("自动更新：未找到已配对设备，请先手动连接一次");
+      status.textContent = "自动更新：未配对设备，请先手动连接";
+      return;
+    }
+
+    if (!connected) {
+      // 已有设备但未连接，先重连
+      addLog("自动更新：正在重连设备...");
+      await reConnect();
+    }
+
+    // 连接成功后同步时间
+    if (gattServer != null && gattServer.connected) {
+      await syncTime(1);
+      addLog("自动更新：每日蓝牙更新完成");
+      status.textContent = "自动更新：已启用（每日 " + autoUpdateTime + "）";
+    } else {
+      addLog("自动更新：连接失败，已跳过本次更新");
+      status.textContent = "自动更新：连接失败，已跳过";
+    }
+  } catch (e) {
+    console.error(e);
+    if (e.message) addLog("自动更新：失败 - " + e.message);
+    status.textContent = "自动更新：执行出错";
+  }
+}
+
+function testAutoUpdate() {
+  addLog("手动触发自动更新测试...");
+  lastAutoUpdateDate = ""; // 重置日期标记，允许立即执行
+  runAutoUpdate();
+}
+
 document.body.onload = () => {
   updateButtonStatus();
+  // 从 DOM 同步开关初始状态
+  const chk = document.getElementById("chk-auto-update");
+  if (chk) chk.checked = autoUpdateEnabled;
+  const status = document.getElementById("auto-status");
+  if (status) status.textContent = "自动更新：" + (autoUpdateEnabled ? "已启用（每日 " + autoUpdateTime + "）" : "已停止");
 }
