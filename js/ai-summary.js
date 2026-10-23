@@ -1,7 +1,51 @@
 // ---------- AI 总结：抓取日报 → 渲染成墨水屏位图 → 蓝牙推送 ----------
-// 依赖 main.js 中的：addLog / epdCharacteristic / gattServer / writePayload / EpdCmd
+// 与 main.js 的耦合刻意保持最小：
+//   - 只读取 addLog / epdCharacteristic / gattServer（旧版 main.js 也有）
+//   - 写入走本文件的 writeBytes()，main.js 有 writePayload 就用，没有就自己写
+//     这样即使浏览器缓存了旧版 main.js，推送功能也不会直接报 not defined
+//   - 指令码直接写常量（属于协议本身，不依赖 main.js 的 EpdCmd）
 
 const SUMMARY_PATH = '001/output/latest.html';
+
+const SUM_CMD = {
+  INIT:        0x01,
+  REFRESH:     0x05,
+  WRITE_IMAGE: 0x30,
+};
+
+/**
+ * 统一写入入口。
+ * main.js（新版）提供 writePayload(bytes, withResponse, silent)；
+ * 若为旧缓存版本则没有该函数，这里退化成直接写特征值。
+ */
+async function writeBytes(bytes, withResponse) {
+  const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+
+  if (typeof writePayload === 'function') {
+    return writePayload(data, withResponse, true);
+  }
+
+  if (typeof epdCharacteristic === 'undefined' || epdCharacteristic == null) {
+    if (typeof addLog === 'function') addLog('服务不可用，请检查蓝牙连接');
+    return false;
+  }
+
+  try {
+    if (withResponse) await epdCharacteristic.writeValueWithResponse(data);
+    else await epdCharacteristic.writeValueWithoutResponse(data);
+  } catch (e) {
+    console.error(e);
+    if (e.message && typeof addLog === 'function') addLog('write: ' + e.message);
+    return false;
+  }
+  try { lastWriteTime = Date.now(); } catch (_) { /* 旧版没有该变量也不影响 */ }
+  return true;
+}
+
+function isDeviceConnected() {
+  if (typeof gattServer === 'undefined' || gattServer == null) return false;
+  return gattServer.connected === true;
+}
 
 // MTU / RLE 由 main.js 在收到设备 notification 时写入
 const EpdLink = globalThis.EpdLink || (globalThis.EpdLink = { mtu: 240, rle: false, reported: false });
@@ -373,11 +417,11 @@ async function sendImageLayer(data, isBw, onProgress) {
       : ((isBw ? 0x0F : 0x00) | (i === 0 ? 0x00 : 0xF0));
 
     const payload = new Uint8Array(chunk.length + 2);
-    payload[0] = EpdCmd.WRITE_IMAGE;
+    payload[0] = SUM_CMD.WRITE_IMAGE;
     payload[1] = flag;
     payload.set(chunk, 2);
 
-    const ok = await writePayload(payload, true, true);
+    const ok = await writeBytes(payload, true);
     if (!ok) return false;
     if (onProgress) onProgress(i + 1, total);
   }
@@ -387,7 +431,7 @@ async function sendImageLayer(data, isBw, onProgress) {
 async function pushLatestSummary() {
   if (pushingSummary) return;
 
-  if (typeof gattServer === 'undefined' || gattServer == null || !gattServer.connected) {
+  if (!isDeviceConnected()) {
     sumStatus('请先连接设备');
     if (typeof addLog === 'function') addLog('AI 总结推送：设备未连接');
     return;
@@ -413,7 +457,7 @@ async function pushLatestSummary() {
       '，块大小 ' + EpdLink.mtu + 'B' + (EpdLink.rle ? '（RLE 固件）' : ''));
 
     sumStatus('初始化屏幕...');
-    const initOk = await writePayload([EpdCmd.INIT], true, true);
+    const initOk = await writeBytes([SUM_CMD.INIT], true);
     if (!initOk) throw new Error('初始化指令下发失败');
     await sleep(300);
 
@@ -436,7 +480,7 @@ async function pushLatestSummary() {
     }
 
     sumStatus('刷新屏幕...');
-    const refOk = await writePayload([EpdCmd.REFRESH], true, true);
+    const refOk = await writeBytes([SUM_CMD.REFRESH], true);
     if (!refOk) throw new Error('刷新指令下发失败');
 
     addLog('AI 总结推送完成，屏幕刷新中请勿操作');
