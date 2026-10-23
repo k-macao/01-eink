@@ -135,6 +135,52 @@ async function preConnect() {
   }
 }
 
+async function forceReselect() {
+  // 关键：requestDevice 需要用户手势，这里必须先同步完成清理，
+  // 任何 await 都会消耗掉手势，导致设备选择框无法弹出。
+  if (bleDevice != null) {
+    try {
+      bleDevice.removeEventListener('gattserverdisconnected', disconnect);
+      if (bleDevice.gatt.connected) bleDevice.gatt.disconnect();
+    } catch (e) {
+      console.error(e);
+    }
+  }
+
+  if (timerId != null) {
+    clearInterval(timerId);
+    timerId = null;
+  }
+
+  resetVariables();
+  bleDevice = null;
+  document.getElementById("btn-connect").innerHTML = '连接';
+  updateButtonStatus();
+  clearLog();
+  addLog("已清除旧设备句柄，请在弹出的窗口中选择设备...");
+
+  try {
+    bleDevice = await navigator.bluetooth.requestDevice({
+      optionalServices: ['62750001-d828-918d-fb46-b6c11c675aec'],
+      acceptAllDevices: true,
+    });
+  } catch (e) {
+    console.error(e);
+    const msg = e.message ? e.message : String(e);
+    if (e.name === 'NotFoundError' || /cancel/i.test(msg)) {
+      addLog("已取消设备选择。");
+    } else {
+      addLog("requestDevice: " + msg);
+      addLog("无法选择设备，请确认蓝牙已开启，且浏览器支持 Web Bluetooth。");
+    }
+    return;
+  }
+
+  await bleDevice.addEventListener('gattserverdisconnected', disconnect);
+  addLog("已选择设备: " + bleDevice.name + "，开始连接...");
+  setTimeout(async function () { await connect(); }, 300);
+}
+
 async function reConnect() {
   if (bleDevice != null && bleDevice.gatt.connected)
     bleDevice.gatt.disconnect();
