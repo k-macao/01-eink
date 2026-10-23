@@ -1,0 +1,253 @@
+// AI 总结卡片渲染的纯 JS 测试（不依赖 canvas / 浏览器 / 第三方包）
+//
+//   node --test tests/
+//
+// 用一个「按字符宽度量字」的假 canvas 上下文加载 js/ai-summary.js，
+// 检查解析、折行、字号选择、越界与 1bpp 位平面打包。
+
+const test = require('node:test');
+const assert = require('node:assert');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const ROOT = path.resolve(__dirname, '..');
+
+/** 假 canvas 2D 上下文：只实现 drawCard / drawFontSample 用到的那几个 API */
+function createStubContext(w, h) {
+  const ctx = {
+    font: '16px sans-serif',
+    fillStyle: '#000',
+    textBaseline: 'top',
+    textAlign: 'left',
+    texts: [],
+    rects: [],
+    _w: w,
+    _h: h,
+    measureText(s) {
+      const m = /(\d+(?:\.\d+)?)px/.exec(ctx.font);
+      const size = m ? parseFloat(m[1]) : 16;
+      let width = 0;
+      for (const ch of String(s)) {
+        const code = ch.codePointAt(0);
+        if (code > 0x2e80) width += size;              // 汉字 / 全角标点
+        else if (/[ilj.,;:'!\s]/.test(ch)) width += size * 0.3;
+        else if (/[A-Z0-9]/.test(ch)) width += size * 0.62;
+        else width += size * 0.5;
+      }
+      return { width };
+    },
+    fillText(t, x, y) { ctx.texts.push({ text: String(t), x, y, font: ctx.font }); },
+    fillRect(x, y, rw, rh) { ctx.rects.push({ x, y, w: rw, h: rh }); },
+    getImageData() { return { data: new Uint8ClampedArray(w * h * 4).fill(255) }; },
+    save() {}, restore() {}, translate() {}, rotate() {}, drawImage() {},
+  };
+  return ctx;
+}
+
+function loadModule() {
+  const ui = {
+    'sum-size': '400x300',
+    'sum-font': 'hei',
+    'sum-size-scale': 'normal',
+    'sum-zoom': '1',
+  };
+  const elements = new Map();
+  const makeElement = id => {
+    if (elements.has(id)) return elements.get(id);
+    const el = {
+      id,
+      value: ui[id] !== undefined ? ui[id] : '',
+      checked: false,
+      disabled: null,
+      style: {},
+      textContent: '',
+      options: Object.keys(ui).includes(id)
+        ? ['400x300', '296x128', '250x122', 'hei', 'song', 'kai', 'mono', 'small', 'normal', 'large', '1', '2', '3']
+          .map(v => ({ value: v })).filter(o => o.value === ui[id] || true)
+        : [],
+      addEventListener() {},
+      getContext() { return createStubContext(400, 300); },
+    };
+    elements.set(id, el);
+    return el;
+  };
+
+  const store = {};
+  const sandbox = {
+    console,
+    Math,
+    Date,
+    Uint8Array,
+    Uint8ClampedArray,
+    setTimeout: (fn) => { /* 测试里不跑延迟任务 */ },
+    fetch: async () => { throw new Error('测试环境不联网'); },
+    localStorage: {
+      getItem: k => (k in store ? store[k] : null),
+      setItem: (k, v) => { store[k] = String(v); },
+    },
+    document: {
+      readyState: 'loading',
+      addEventListener() {},
+      getElementById: makeElement,
+      createElement: () => makeElement('tmp' + Math.random()),
+    },
+    addLog() {},
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  const src = fs.readFileSync(path.join(ROOT, 'js', 'ai-summary.js'), 'utf8');
+  vm.runInContext(src, sandbox);
+  return { sandbox, makeElement, store };
+}
+
+const { sandbox, makeElement } = loadModule();
+const get = name => vm.runInContext(name, sandbox);
+const call = (name, ...args) => get(name)(...args);
+
+const README_HTML = fs.readFileSync(path.join(ROOT, '001', 'output', 'latest.html'), 'utf8');
+
+test('从 latest.html 解析「总结」栏目', () => {
+  const summary = call('extractSummary', README_HTML);
+  assert.ok(summary, '应能找到总结栏目');
+  assert.match(summary.date, /^\d{4}-\d{2}-\d{2}$/);
+  assert.ok(summary.fields['今日盘点']);
+  assert.ok(summary.fields['明日关注']);
+  assert.ok(summary.fields['风险关注']);
+  // 花体装饰行 / emoji 行不应混进字段
+  for (const k of Object.keys(summary.fields)) {
+    assert.ok(!/[█▓▒░]/.test(k), '字段名不应含块字符：' + k);
+  }
+});
+
+test('卡片最多 4 条，且内容非空', () => {
+  const card = call('buildCard', call('extractSummary', README_HTML));
+  assert.ok(card.lines.length > 0 && card.lines.length <= 4);
+  for (const line of card.lines) {
+    assert.ok(line.label && line.text);
+  }
+});
+
+test('三种屏幕尺寸都不越界，字号不低于 10px', () => {
+  const card = call('buildCard', call('extractSummary', README_HTML));
+  const drawCard = get('drawCard');
+  const opts = call('sumDisplayOptions');
+  for (const [w, h] of [[400, 300], [296, 128], [250, 122]]) {
+    const ctx = createStubContext(w, h);
+    const layout = drawCard(ctx, card, w, h, opts);
+    assert.ok(layout.bodySize >= 10, w + 'x' + h + ' 字号过小：' + layout.bodySize);
+    assert.ok(layout.blocks.length >= 1);
+    // 所有文字都必须落在画布内
+    for (const t of ctx.texts) {
+      assert.ok(t.y >= 0 && t.y < h, '文字纵向越界：' + JSON.stringify(t));
+      assert.ok(t.x >= 0 && t.x < w, '文字横向越界：' + JSON.stringify(t));
+    }
+  }
+});
+
+test('正文每一行都不超过可用宽度', () => {
+  const card = {
+    date: '2026-10-23',
+    lines: [
+      { label: '今日盘点', text: '整体偏多｜A股普涨强势｜政策偏暖｜北向资金净流入 120 亿' },
+      { label: '风险关注', text: '媒体舆情 结构化预警 12 只（红/橙 3） · 异常关注 7 只 · 最高 盈富基金 72/100' },
+      { label: 'AI 结论', text: '本次日报的配料表：24 路数据里 19 路是当天新鲜货，缺的 2 路直接点名、不装样子。' },
+    ],
+  };
+  const drawCard = get('drawCard');
+  const opts = call('sumDisplayOptions');
+  const w = 400, h = 300;
+  const ctx = createStubContext(w, h);
+  drawCard(ctx, card, w, h, opts);
+  for (const t of ctx.texts) {
+    const width = ctx.measureText(t.text).width;
+    assert.ok(t.x + width <= w + 0.5, '文字超出右边界：' + t.text + ' 右端 ' + (t.x + width));
+  }
+});
+
+test('折行不会把标点甩到行首，也不会拦腰切断英文', () => {
+  const wrapLines = get('wrapLines');
+  const ctx = createStubContext(200, 100);
+  ctx.font = '16px sans-serif';
+  const lines = wrapLines(ctx, '媒体舆情 结构化预警 5 只（红/橙 0），最高 盈富基金 40/100｜策略关键词 降级×1、加息×1', 200);
+  const NO_START = '，。、；：？！）】》」』…·,.;:!?)]}';
+  for (const line of lines.slice(1)) {
+    assert.ok(NO_START.indexOf(line[0]) < 0, '标点出现在行首：' + line);
+  }
+  const en = wrapLines(ctx, '缺的 2 路（申万一级行业轮动策略、StockTwits）直接点名', 200);
+  assert.ok(en.some(l => l.includes('StockTwits')), 'StockTwits 被拆开：' + JSON.stringify(en));
+});
+
+test('字号档位单调：小 ≤ 标准 ≤ 大', () => {
+  const card = call('buildCard', call('extractSummary', README_HTML));
+  const drawCard = get('drawCard');
+  const base = call('sumDisplayOptions');
+  const sizeOf = offset => {
+    const ctx = createStubContext(400, 300);
+    return drawCard(ctx, card, 400, 300, Object.assign({}, base, { offset })).bodySize;
+  };
+  const small = sizeOf(-1), normal = sizeOf(0), large = sizeOf(2);
+  assert.ok(small <= normal, '小档不应比标准档大：' + small + ' > ' + normal);
+  assert.ok(normal <= large, '标准档不应比大档大：' + normal + ' > ' + large);
+});
+
+test('1bpp 位平面：1=白 0=黑，红色层 0=红 1=非红，行尾补齐保持白', () => {
+  const canvasToLayers = get('canvasToLayers');
+  const w = 10, h = 2;                     // 10 不是 8 的倍数，右侧补 6 位
+  const data = new Uint8ClampedArray(w * h * 4).fill(255);
+  const setPx = (x, y, r, g, b) => {
+    const i = (y * w + x) * 4;
+    data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
+  };
+  setPx(0, 0, 0, 0, 0);        // 黑
+  setPx(7, 0, 0, 0, 0);        // 黑，字节最低位
+  setPx(8, 0, 0, 0, 0);        // 黑，第二字节首位
+  setPx(2, 1, 220, 30, 30);    // 红
+
+  const ctx = {
+    getImageData: () => ({ data }),
+  };
+  const { bw, red, byteWidth } = canvasToLayers(ctx, w, h);
+  assert.strictEqual(byteWidth, 2);
+  assert.strictEqual(bw.length, byteWidth * h);
+
+  // 第一行第一字节：bit7(0,0)、bit0(7,0) 为黑 → 0b0111_1110
+  assert.strictEqual(bw[0], 0b01111110);
+  // 第一行第二字节：bit7(8,0) 黑，其余补齐位必须为 1（白）
+  assert.strictEqual(bw[1], 0b01111111);
+  // 第二行第一字节：只有 x=2 是红点。红色在灰度上也算深色，
+  // 所以黑白层同样置黑，红色层该位单独清零（1 = 非红）
+  assert.strictEqual(bw[2], 0b11011111);
+  assert.strictEqual(red[2], 0b11011111);
+  // 不是红色的深色像素：红色层保持 1，不会被误判成红
+  setPx(3, 1, 30, 30, 30);
+  const second = canvasToLayers({ getImageData: () => ({ data }) }, w, h);
+  assert.strictEqual(second.bw[2], 0b11001111);
+  assert.strictEqual(second.red[2], 0b11011111);
+});
+
+test('字体样张能画满且不越界', () => {
+  const drawFontSample = get('drawFontSample');
+  const opts = call('sumDisplayOptions');
+  for (const [w, h] of [[400, 300], [296, 128]]) {
+    const ctx = createStubContext(w, h);
+    const info = drawFontSample(ctx, w, h, opts);
+    assert.ok(info.kept >= 2, '样张至少要有两行对比');
+    for (const t of ctx.texts) {
+      assert.ok(t.y >= 0 && t.y < h, '样张文字纵向越界：' + JSON.stringify(t));
+      assert.ok(t.x + ctx.measureText(t.text).width <= w + 0.5, '样张文字横向越界：' + t.text);
+    }
+  }
+});
+
+test('偏好记忆只接受下拉里存在的值', () => {
+  const { store } = loadModule();
+  store['epd.sum-font'] = 'not-a-font';
+  const saved = {};
+  Object.assign(saved, store);
+  // restore 逻辑：非法值应被忽略，控件保持原值
+  const box = loadModule();
+  box.store['epd.sum-font'] = 'mono';
+  vm.runInContext('restoreSumPrefs()', box.sandbox);
+  assert.strictEqual(box.makeElement('sum-font').value, 'mono');
+});

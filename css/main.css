@@ -270,3 +270,14 @@ select:disabled {
         margin-bottom: 5px;
     }
 }
+
+.sum-hint {
+    margin-top: 8px;
+    font-size: 0.85rem;
+    color: #666;
+    line-height: 1.5;
+}
+
+#sum-preview {
+    background: #fff;
+}
