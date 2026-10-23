@@ -151,13 +151,16 @@ test('窗口摘要只覆盖报告日之后的 5 个工作日', () => {
   const days = call('nextFiveWeekdays', summary.date);
   assert.deepStrictEqual(Array.from(days), ['10-26', '10-27', '10-28', '10-29', '10-30']);
 
-  // 跨月 / 跨年也不能漏：区间两头就是这五天的首尾
-  assert.ok(winText.startsWith(days[0] + '~' + days[days.length - 1]), '区间不对：' + winText);
   for (const md of winText.match(/\d{2}-\d{2}/g) || []) {
     assert.ok(days.includes(md), '超出一周范围：' + md + ' | ' + winText);
   }
-  // 30 天口径的内容不该再出现在卡上
-  assert.ok(!/个时间点|最密|★★★/.test(winText), '窗口摘要混进了 30 天口径：' + winText);
+  // 卡上只有内容：「10-26~10-30」这类区间说明、30 天口径都不该出现
+  assert.ok(!winText.includes('~'), '不该有区间说明：' + winText);
+  assert.ok(!/个时间点|最密|★★★|交易日|未来/.test(winText), '混进了说明文字：' + winText);
+  // 每条都以「MM-DD 名字」开头
+  for (const seg of winText.split(' · ')) {
+    assert.match(seg, /^\d{2}-\d{2} \S/, '条目格式应为「日期 名字」：' + seg);
+  }
 
   // 每天只留一条，且都在原文里
   const picked = call('windowDatedItems', summary.window).filter(it => days.includes(it.md));
@@ -174,7 +177,7 @@ test('五天内没有日程时退回 30 天口径', () => {
   const near = [{ label: '央行议息 / 重要会议', value: '10-28 美联储议息会议' }];
   assert.deepStrictEqual(
     Array.from(call('composeFiveDayVariants', near, '2026-10-23')),
-    ['10-26~10-30 · 10-28 美联储议息', '10-28 美联储议息'],
+    ['10-28 美联储议息'],
   );
 });
 
