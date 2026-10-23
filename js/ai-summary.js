@@ -334,6 +334,9 @@ function nextFiveWeekdays(dateISO) {
  * 里带 MM-DD 的条目按「报告日之后的 5 个工作日」筛一遍，一天只留最重要的一条，
  * 日期都来自日报原文，不自己推算节假日。
  *
+ * 卡上只出现内容本身（`10-26 五中全会 · 10-28 美联储议息`），
+ * 不加「10-26~10-30」这类区间说明——那是元信息，屏上每多一个字都挤掉正事。
+ *
  * 五天内一条都没有（淡季）时返回 []，由调用方退回 30 天口径。
  */
 function composeFiveDayVariants(pairs, dateISO) {
@@ -351,24 +354,34 @@ function composeFiveDayVariants(pairs, dateISO) {
   if (!picked.length) return [];
 
   picked.sort((a, b) => days.indexOf(a.md) - days.indexOf(b.md));
-  let show = picked;
-  if (show.length > 3) {
-    // 五天都有事时屏幕上放不下，按重要度留 3 天，再排回日期顺序
+
+  // 日报里同一个读数会连着几天重复列（09-30 CPI / 10-01 CPI / 10-02 CPI），
+  // 屏上重复三遍没有信息量，只留最早那天
+  const seen = new Set();
+  const uniq = [];
+  picked.forEach(it => {
+    if (seen.has(it.name)) return;
+    seen.add(it.name);
+    uniq.push(it);
+  });
+
+  let show = uniq;
+  if (show.length > 4) {
+    // 屏上最多排 4 条：五天都有事时按重要度留 4 天，再排回日期顺序
     const keepIdx = show.map((it, i) => ({ score: it.score, i }))
       .sort((a, b) => (b.score - a.score) || (a.i - b.i))
-      .slice(0, 3)
+      .slice(0, 4)
       .map(x => x.i)
       .sort((a, b) => a - b);
     show = keepIdx.map(i => show[i]);
   }
 
-  const span = days[0] + '~' + days[days.length - 1];
+  // 卡上只放「日期 + 事情」本身：区间（10-26~10-30）是说明，不是内容，不占行宽
   const label = it => it.md + ' ' + it.name;
   const out = [];
   [
-    [span].concat(show.map(label)),
-    [span].concat(show.slice(0, 2).map(label)),
     show.map(label),
+    show.slice(0, 3).map(label),
     show.slice(0, 2).map(label),
     show.slice(0, 1).map(label),
   ].forEach(list => {
@@ -881,7 +894,8 @@ function drawCard(ctx, card, w, h, opts) {
     for (let size = maxBody; size >= SUM_MIN_FONT; size--) {
       const got = planLayout(size, 0, false) || planLayout(size, 0, true);
       if (!got) continue;
-      const keptChars = got.blocks.reduce((a, b) => a + b.item.text.replace(/…$/, '').length, 0);
+      // 折行时行间补的空格不能算进字数，否则截短了也算成 100%
+      const keptChars = got.blocks.reduce((a, b) => a + squeezeText(b.item.text.replace(/…$/, '')).length, 0);
       got.keptRatio = keptChars / totalChars;
       if (got.keptRatio >= 0.999 && got.blocks.length === source.length) return size;
       if (!fallback || got.keptRatio > fallback.ratio) fallback = { size, ratio: got.keptRatio };
@@ -952,6 +966,7 @@ function drawCard(ctx, card, w, h, opts) {
 
   // 记录保留率 / 被截短 / 被省略的条数，方便预览时核对
   layout.keptRatio = layout.blocks.reduce((a, b) => a + squeezeText(b.item.text.replace(/…$/, '')).length, 0) / totalChars;
+
   layout.trimmed = layout.blocks.filter((b, i) => !card.lines[i] || b.item.text !== card.lines[i].text).length;
   layout.kept = layout.blocks.length;
   layout.total = card.lines.length;
