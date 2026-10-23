@@ -122,7 +122,7 @@ function extractSummary(html) {
     date = d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6, 8);
   }
 
-  return { date, fields };
+  return { date, fields, window: extractWindowSummary(html) };
 }
 
 /** 取第一句（到句号/感叹号），最多 maxLen 字 */
@@ -140,17 +140,208 @@ function clampText(text, maxLen) {
 }
 
 /**
+ * 「窗口摘要」的字段名（见 001/output/pipeline.py 的 _cal_digest）。
+ * 精简版只有前 3 条，全量版还有中国/美国关键读数、最密集日、筛选口径。
+ */
+const WINDOW_LABELS = [
+  '时间窗口', '时间点合计', '央行议息 / 重要会议', '央行议息/重要会议',
+  '中国关键读数', '美国关键读数', '最密集日', '筛选口径',
+];
+
+const squashLabel = s => String(s).replace(/\s+/g, '').replace(/／/g, '/');
+
+const WINDOW_LABEL_SET = new Set(WINDOW_LABELS.map(squashLabel));
+
+/**
+ * 取出「时间节点量化分析」栏目里的「窗口摘要」表。
+ *
+ * 两个主题的结构不一样：研报版是一行两列（标签 / 内容），pixel 版是
+ * 标签、内容各占一行。所以这里不按 <tr><td> 结构硬解，而是把标签和
+ * 单元格边界都压成分隔符，再按「已知字段名 → 下一段」配对，两种版式通吃。
+ *
+ * 返回 [{ label, value }]（按原顺序）；老日报没有这张表时返回 null。
+ */
+function extractWindowSummary(html) {
+  const head = /(^|>)\s*窗口摘要\s*</.exec(html);
+  if (!head) return null;
+
+  const at = head.index + head[0].length;
+  let end = html.indexOf('<!--SPLIT-->', at);
+  if (end < 0) end = Math.min(html.length, at + 12000);
+  const seg = html.slice(at, end);
+
+  // 单元格 / 行 / 区块边界统一换成 ，便于按段切
+  const flat = decodeEntities(
+    seg.replace(/<\/?(td|th|tr|div|table|tbody|p|br)\b[^>]*>/gi, '\u0001')
+       .replace(/<[^>]*>/g, ' ')
+  );
+  const tokens = flat.split('\u0001').map(t => t.replace(/\s+/g, ' ').trim()).filter(Boolean);
+
+  const pairs = [];
+  for (let i = 0; i < tokens.length; i++) {
+    if (!WINDOW_LABEL_SET.has(squashLabel(tokens[i]))) continue;
+    // 值 = 这一段之后、下一个「字段名」之前的第一段非空文本
+    let value = '';
+    for (let j = i + 1; j < tokens.length; j++) {
+      if (WINDOW_LABEL_SET.has(squashLabel(tokens[j]))) break;
+      if (tokens[j].trim()) { value = tokens[j].trim(); break; }
+    }
+    if (!value) continue;
+    pairs.push({ label: tokens[i].replace(/\s+/g, ' ').trim(), value });
+  }
+
+  return pairs.length ? pairs : null;
+}
+
+/** 「10-26 中国共产党第二十届中央委员会第五次全体会议」→「10-26 五中全会」 */
+function shortEventName(text) {
+  let s = String(text || '').trim();
+  if (!s || s.indexOf('窗口内暂无') >= 0) return '';
+  s = s
+    .replace(/中国共产党/g, '')
+    // 「二十届中央委员会第五次全体会议」→「五中全会」：屏上只留最认得出的部分
+    .replace(/第([一二三四五六七八九十\d]+)届中央委员会第([一二三四五六七八九十\d]+)次全体会议/g, '$2中全会')
+    .replace(/议息会议/g, '议息')
+    .replace(/全体会议/g, '全会')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const m = /^(\d{1,2}-\d{1,2})\s*(.+)$/.exec(s);
+  if (m) return m[1] + ' ' + (m[2].length > 9 ? m[2].slice(0, 8) + '…' : m[2]);
+  return s.length > 12 ? s.slice(0, 11) + '…' : s;
+}
+
+/**
+ * 事件重要度打分：屏幕只放得下 1～2 个，要挑真正影响市场的。
+ * 纯关键词加权，只用于「排序」，不改变原文事实。
+ */
+function eventWeight(text) {
+  const t = String(text);
+  let w = 0;
+  if (/美联储/.test(t)) w += 5;
+  if (/中央委员会|中全会/.test(t)) w += 5;
+  if (/政治局|国务院/.test(t)) w += 4;
+  if (/央行|议息/.test(t)) w += 3;
+  if (/非农|CPI|PCE|GDP/.test(t)) w += 2;
+  if (/发布会|论坛|博览会|展/.test(t)) w -= 2;
+  return w;
+}
+
+/**
+ * 把「窗口摘要」压成屏幕上读得完的一句话：
+ * 窗口天数 · 时间点总数 · 最密集日 · 重点会议（前 2 个）。
+ * 只做压缩，不加新数字——每个数字都来自日报原文。
+ */
+function windowSegments(pairs) {
+  const f = {};
+  (pairs || []).forEach(p => { if (!(p.label in f)) f[p.label] = p.value; });
+
+  const seg = { span: '', total: '', star: '', dense: '', meets: [] };
+
+  // 时间窗口：2026-10-23 ~ 2026-11-22 · 未来 30 天 → 10-23~11-22 · 30 天
+  const span = f['时间窗口'] || '';
+  const sm = /(\d{4})-(\d{2})-(\d{2})\s*[~～]\s*(\d{4})-(\d{2})-(\d{2})/.exec(span);
+  const days = /未来\s*(\d+)\s*天/.exec(span);
+  if (sm) seg.span = sm[2] + '-' + sm[3] + '~' + sm[5] + '-' + sm[6] + (days ? ' · ' + days[1] + ' 天' : '');
+  else if (span) seg.span = clampText(span, 24);
+
+  // 时间点总数：60 个 · ★★★ 59 / ★★ 1
+  const total = f['时间点合计'] || '';
+  const tm = /^(\d+)\s*个/.exec(total);
+  const star = /★★★\s*(\d+)/.exec(total);
+  if (tm) {
+    seg.total = tm[1] + ' 个时间点';
+    if (star) seg.star = '★★★' + star[1];
+  }
+
+  // 最密集日：10-29 周四（8 项 · T+6）→ 最密 10-29（8 项）
+  const dense = f['最密集日'] || '';
+  const dm = /^(\d{1,2}-\d{1,2})[^（(]*[（(]\s*(\d+)\s*项/.exec(dense);
+  if (dm) seg.dense = '最密 ' + dm[1] + '（' + dm[2] + ' 项）';
+  else if (dense) seg.dense = '最密 ' + String(dense).split(/[（(]/)[0].trim();
+
+  // 重点会议：原文按日期排，「前 2 个」很可能是不重要的那两场；
+  // 这里按关键词挑重头戏，再按日期排回去。
+  const meet = f['央行议息 / 重要会议'] || f['央行议息/重要会议'] || '';
+  seg.meets = String(meet)
+    .replace(/等\s*\d+\s*项\s*$/, '')
+    .split('、')
+    .map(t => t.trim())
+    .filter(Boolean)
+    .map((raw, i) => ({ i, score: eventWeight(raw), name: shortEventName(raw) }))
+    .filter(x => x.name)
+    .sort((a, b) => (b.score - a.score) || (a.i - b.i))
+    .slice(0, 2)
+    .sort((a, b) => a.i - b.i)
+    .map(x => x.name);
+
+  return seg;
+}
+
+/**
+ * 按「信息量从多到少」列出窗口摘要的几档文案。
+ * 小屏（296×128 / 250×122）正文只有一行位置，排版层会退到能放下的那一档，
+ * 而不是把句子腰斩——所以这里给的是整句候选，不是字符串前缀。
+ */
+function composeWindowVariants(pairs) {
+  const g = windowSegments(pairs);
+  const pick = keys => keys.map(k => g[k]).filter(Boolean);
+
+  const full = pick(['span', 'total', 'star', 'dense']).concat(g.meets);
+  const mid = pick(['span', 'total', 'dense']).concat(g.meets.slice(0, 1));
+  // 再短一档：丢掉时间窗口，但保住「最密集日 + 重头戏」——这两项才是要看日历的理由
+  const brief = pick(['dense']).concat(g.meets);
+  const short = pick(['total', 'dense']);
+  const tiny = pick(['dense']);
+
+  const out = [];
+  [full, mid, brief, short, tiny].forEach(list => {
+    const text = list.join(' · ');
+    if (text && out.indexOf(text) < 0) out.push(text);
+  });
+  return out;
+}
+
+/** 单档文案（日志 / 测试用） */
+function composeWindowSummary(pairs) {
+  const v = composeWindowVariants(pairs);
+  return v.length ? v[0] : '';
+}
+
+/**
  * 把「总结」字段整理成屏幕卡片上要显示的若干行。
- * 屏幕很小，只保留 4 条最有信息量的内容。
+ * 屏幕很小，只保留 3 条最有信息量的内容：
+ * 今日盘点 / 明日关注 / 窗口摘要（时间节点栏目的全窗口口径）。
  */
 function buildCard(summary) {
-  const f = summary.fields;
+  // extractSummary 对「总结」格式之前的旧日报会返回 null —— 给一张空卡片，
+  // 让上层照常画页头页脚，而不是抛 TypeError
+  if (!summary) return { date: '', lines: [] };
+
+  const f = summary.fields || {};
   const lines = [];
 
   if (f['今日盘点']) lines.push({ label: '今日盘点', text: clampText(f['今日盘点'], 60) });
   if (f['明日关注']) lines.push({ label: '明日关注', text: clampText(f['明日关注'], 60) });
-  if (f['风险关注']) lines.push({ label: '风险关注', text: clampText(f['风险关注'], 78) });
-  if (f['本栏结论']) lines.push({ label: 'AI 结论', text: firstSentence(f['本栏结论'], 96) });
+
+  // 窗口摘要取代原来的「风险关注」「AI 结论」：那两条又长又常被截，
+  // 屏上读不完；窗口摘要给的是未来 N 天的日程密度与重头戏。
+  if (summary.window && summary.window.length) {
+    // 三档候选：小屏（296×128 / 250×122）只有一行位置，
+    // 就让排版层自动退到「只留关键数字」那一档，而不是把句子腰斩
+    const variants = composeWindowVariants(summary.window);
+    if (variants.length) {
+      lines.push({
+        label: '窗口摘要',
+        text: clampText(variants[0], 130),
+        alts: variants.map(t => clampText(t, 130)),
+      });
+    }
+  } else if (f['风险关注'] || f['本栏结论']) {
+    // 老日报没有「窗口摘要」表时，退回原来的两条
+    if (f['风险关注']) lines.push({ label: '风险关注', text: clampText(f['风险关注'], 78) });
+    if (f['本栏结论']) lines.push({ label: 'AI 结论', text: firstSentence(f['本栏结论'], 96) });
+  }
 
   // 兜底：字段命名有变化时，取任意前两条非空内容
   if (lines.length === 0) {
@@ -291,19 +482,51 @@ function isAsciiWordChar(ch) {
   return /[0-9A-Za-z._+\-\/%]/.test(ch);
 }
 
+/** 这些位置断行读起来最舒服（分隔符后面断，语义完整） */
+// 注意不要把普通空格算进来：否则「· 60 个」会在「60」后面断开，
+// 把数字和量词劈成两行。
+const SOFT_BREAK_AFTER = '·｜|、，,；;/）)';
+
+/** 「 · 」是摘要字段之间的分隔符：按它整段换行，语义最完整 */
+const SEGMENT_SPLIT = /\s+·\s+/;
+
 /**
- * 按像素宽度折行：中文逐字断行，英文/数字整段不拆，标点避头尾。
- * 以前的版本既没有避头（「×」会掉到行首），也会把 StockTwits 拦腰截断。
+ * 逐字折行（单个「段」内部用）：中文逐字断，英文/数字整段不拆，
+ * 标点避头尾，并尽量在「｜、，」后面断。
  */
-function wrapLines(ctx, text, maxWidth) {
+function wrapChars(ctx, text, maxWidth) {
   const chars = Array.from(String(text));
   const fits = s => ctx.measureText(s).width <= maxWidth;
   const out = [];
   let line = '';
 
+  const softBreak = cur => {
+    // 从行尾往回找「·｜、，」这类分隔符：断了语义完整。
+    // 只在不浪费行宽时才退（断点前至少填满 62% 行宽），否则宁可逐字断。
+    const minHead = maxWidth * 0.62;
+    for (let i = cur.length - 1; i >= 2; i--) {
+      if (SOFT_BREAK_AFTER.indexOf(cur[i]) < 0) continue;
+      let cut = i + 1;
+      while (cut < cur.length && cur[cut] === ' ') cut++;   // 连后面的空格一起带走
+      const head = cur.slice(0, i + 1).trimEnd();
+      if (head.length < 2) continue;
+      if (ctx.measureText(head).width < minHead) continue;
+      return cut;
+    }
+    return 0;
+  };
+
   for (const ch of chars) {
     if (line === '' || fits(line + ch)) {
       line += ch;
+      continue;
+    }
+
+    // 先看能不能退到一个「·｜、，」之后断，退得动就退
+    const cut = softBreak(line);
+    if (cut && fits(line.slice(cut))) {
+      out.push(line.slice(0, cut).replace(/\s+$/, ''));
+      line = line.slice(cut).replace(/^\s+/, '') + ch;
       continue;
     }
 
@@ -325,6 +548,20 @@ function wrapLines(ctx, text, maxWidth) {
       }
     }
 
+    // 「60 个时间点」「30 天」「8 项」：数字和后面的量词不能分家，
+    // 否则会读成「60 个时间 / 点」。把行尾那串数字一起带回下一行。
+    if (carry === '' && /[\u4e00-\u9fa5]/.test(ch)) {
+      const numAt = /(^|[\s·｜、，（(])(\d[\d.,]*)\s*$/.exec(line);
+      if (numAt) {
+        // 用匹配位置切，不能用长度切：捕获组后面还跟着空格
+        const at = numAt.index + numAt[1].length;
+        if (at > 0 && at < line.length) {
+          carry = line.slice(at);
+          line = line.slice(0, at).replace(/\s+$/, '');
+        }
+      }
+    }
+
     if (line === '' && carry === '') {
       out.push(ch);          // 单字就超宽（极端窄屏），只能硬断
       continue;
@@ -334,6 +571,61 @@ function wrapLines(ctx, text, maxWidth) {
   }
   if (line !== '') out.push(line);
   return out;
+}
+
+/**
+ * 折行入口：先按「 · 」把摘要字段切成整段，能整段放下就整段放，
+ * 放不下才在段内逐字断。这样「20 天窗口 · 60 个时间点 · 最密 10-29」
+ * 不会出现「二十届 / 五中全会」这种把专名劈开的断法。
+ *
+ * 断行发生在「 · 」处时，把分隔符一起丢掉——否则行尾会挂着个孤零零的
+ * 「·」，屏上看着像漏字。
+ */
+function wrapLines(ctx, text, maxWidth) {
+  const raw = String(text);
+  const parts = raw.split(SEGMENT_SPLIT);        // 用「空格·空格」切开
+  if (parts.length < 2) return wrapChars(ctx, raw, maxWidth);
+
+  const fits = s => ctx.measureText(s).width <= maxWidth;
+  const out = [];
+  let line = '';
+
+  parts.forEach((part) => {
+    // 段与段之间统一用「 · 」相接（不能因为「最后一段」就省掉分隔符，
+    // 否则两场会议会被粘成一句「…五中全会 10-28 美联储议息」）
+    const glued = (line ? ' · ' : '') + part;
+
+    if (fits(line + glued)) {
+      line += glued;
+      return;
+    }
+
+    if (line) {
+      // 分隔符「 · 」留在上一行末尾：这样 join 能无损拼回原文
+      // （截断重建依赖这个），真正绘制时再用 stripBreakSep 剥掉
+      out.push(line + ' ·');
+      line = '';
+    }
+
+    // 整段自己就超宽 → 段内逐字断
+    if (!fits(part)) {
+      const sub = wrapChars(ctx, part, maxWidth);
+      sub.forEach((ln, k) => {
+        if (k < sub.length - 1) out.push(ln);
+        else line = ln;
+      });
+      return;
+    }
+    line = part;
+  });
+
+  if (line) out.push(line);
+  return out;
+}
+
+/** 去掉折行时留在行尾的分隔符（只影响显示，不影响文本还原） */
+function stripBreakSep(line) {
+  return String(line).replace(/\s*·\s*$/, '');
 }
 
 /**
@@ -376,8 +668,11 @@ function drawCard(ctx, card, w, h, opts) {
 
   const boldAt = size => sumBold(size, opts);
 
-  const source = card.lines.map(l => ({ label: l.label, text: l.text }));
-  const totalChars = source.reduce((a, it) => a + it.text.length, 0) || 1;
+  // alts：该条的「逐级更短候选」，小屏放不下时整句换短，而不是腰斩
+  const source = card.lines.map(l => ({ label: l.label, text: l.text, alts: l.alts || [] }));
+  const squeezeText = t => String(t).replace(/\s+/g, '');
+
+  const totalChars = source.reduce((a, it) => a + squeezeText(it.text).length, 0) || 1;
 
   /** 某个字号下，每条内容按可用宽度折行后的行数 */
   const measureBlock = (item, bodySize, labelSize) => {
@@ -406,6 +701,8 @@ function drawCard(ctx, card, w, h, opts) {
     if (capacity < count) return null;
 
     const measured = source.map(it => measureBlock(it, bodySize, labelSize));
+    // 需求行数一律按「完整文案」算：候选短句只在真的要截断时才启用，
+    // 不能因为「有更短的版本」就提前少给行，否则大屏也只剩半句话
     const needs = measured.map(m => m.wrapped.length);
     // 每条上限：既不超过自身需要，也不吃掉超过 65% 的可视高度（免得一条把别的挤没）
     const perItemCap = Math.max(1, Math.round(capacity * 0.65));
@@ -428,9 +725,28 @@ function drawCard(ctx, card, w, h, opts) {
     const blocks = [];
     for (let i = 0; i < count; i++) {
       const m = measured[i];
+      // 折行时「 · 」会留在上一行末尾（绘制前剥掉），所以直接拼回去
+      // 就是原文前缀——不能 join('')，会把「30 天」和「60 个时间点」粘住。
+      const full = source[i].text;
       let lines = m.wrapped.slice(0, alloc[i]);
-      let text = lines.join('');
-      const cut = text.length < source[i].text.length;
+      let text = lines.join(' ');
+      let cut = squeezeText(text).length < squeezeText(full).length;
+
+      // 该条配了「逐级更短」的候选（窗口摘要）：优先整句换短的，
+      // 别把「10-26 五中全会」这种句尾关键信息腰斩掉
+      const alts = source[i].alts || [];
+      if (cut && alts.length) {
+        for (const alt of alts) {
+          const wrappedAlt = wrapLines(ctx, alt, m.bodyW);
+          if (wrappedAlt.length <= alloc[i]) {
+            lines = wrappedAlt;
+            text = alt;
+            cut = false;
+            break;
+          }
+        }
+      }
+
       if (cut) {
         // 行尾常是「话说一半」的逗号/顿号，去掉再补省略号，读起来才不像断线
         text = text.replace(/[，、；：,;:·|｜\s]+$/, '') + '…';
@@ -440,7 +756,7 @@ function drawCard(ctx, card, w, h, opts) {
           const last = lines[lines.length - 1];
           lines[lines.length - 1] = last.slice(0, Math.max(1, last.length - 1)) + '…';
         }
-        text = lines.join('');
+        text = lines.join(' ');
       }
       blocks.push({
         item: { label: source[i].label, text: text },
@@ -521,7 +837,7 @@ function drawCard(ctx, card, w, h, opts) {
     ctx.font = cardFont(layout.bodySize, opts, boldAt(layout.bodySize));
     let ty = y;
     for (const ln of b.wrapped) {
-      ctx.fillText(ln, pad + b.labelW, ty);
+      ctx.fillText(stripBreakSep(ln), pad + b.labelW, ty);
       ty += b.lineH;
     }
     y += b.blockH;
@@ -533,7 +849,7 @@ function drawCard(ctx, card, w, h, opts) {
   ctx.fillText(foot, w - pad - ctx.measureText(foot).width, h - pad - footSize);
 
   // 记录保留率 / 被截短 / 被省略的条数，方便预览时核对
-  layout.keptRatio = layout.blocks.reduce((a, b) => a + b.item.text.replace(/…$/, '').length, 0) / totalChars;
+  layout.keptRatio = layout.blocks.reduce((a, b) => a + squeezeText(b.item.text.replace(/…$/, '')).length, 0) / totalChars;
   layout.trimmed = layout.blocks.filter((b, i) => !card.lines[i] || b.item.text !== card.lines[i].text).length;
   layout.kept = layout.blocks.length;
   layout.total = card.lines.length;
