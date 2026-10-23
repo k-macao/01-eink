@@ -8,10 +8,15 @@ const timeoutSeconds = 60;
 const textDecoder = new TextDecoder();
 
 const EpdCmd = {
-  INIT:      0x01,
-  SET_TIME:  0x20,
-  SET_ROTATE: 0x21,
+  INIT:        0x01,
+  REFRESH:     0x05,
+  SET_TIME:    0x20,
+  SET_ROTATE:  0x21,
+  WRITE_IMAGE: 0x30,
 };
+
+// 图像下发相关状态（MTU / 是否支持 RLE，由设备 notification 上报）
+globalThis.EpdLink = globalThis.EpdLink || { mtu: 240, rle: false, reported: false };
 
 const MAX_CONNECT_RETRY = 3;
 const CONNECT_RETRY_DELAY_MS = 2000;
@@ -42,23 +47,18 @@ function resetVariables() {
   document.getElementById("log").value = '';
 }
 
-async function write(cmd, data, withResponse = true) {
+async function writePayload(payload, withResponse = true, silent = false) {
   if (!epdCharacteristic) {
-    addLog("服务不可用，请检查蓝牙连接");
+    if (!silent) addLog("服务不可用，请检查蓝牙连接");
     return false;
   }
-  let payload = [cmd];
-  if (data) {
-    if (typeof data == 'string') data = hex2bytes(data);
-    if (data instanceof Uint8Array) data = Array.from(data);
-    payload.push(...data)
-  }
-  addLog(bytes2hex(payload), '⇑');
+  const bytes = payload instanceof Uint8Array ? payload : Uint8Array.from(payload);
+  if (!silent) addLog(bytes2hex(bytes), '⇑');
   try {
     if (withResponse)
-      await epdCharacteristic.writeValueWithResponse(Uint8Array.from(payload));
+      await epdCharacteristic.writeValueWithResponse(bytes);
     else
-      await epdCharacteristic.writeValueWithoutResponse(Uint8Array.from(payload));
+      await epdCharacteristic.writeValueWithoutResponse(bytes);
   } catch (e) {
     console.error(e);
     if (e.message) addLog("write: " + e.message);
@@ -66,6 +66,16 @@ async function write(cmd, data, withResponse = true) {
   }
   lastWriteTime = new Date().getTime();
   return true;
+}
+
+async function write(cmd, data, withResponse = true) {
+  let payload = [cmd];
+  if (data) {
+    if (typeof data == 'string') data = hex2bytes(data);
+    if (data instanceof Uint8Array) data = Array.from(data);
+    payload.push(...data)
+  }
+  return writePayload(payload, withResponse, false);
 }
 
 async function syncTime(mode) {
@@ -98,6 +108,8 @@ function updateButtonStatus() {
   document.getElementById("btn-reconnect").disabled = (gattServer == null || gattServer.connected) ? 'disabled' : null;
   document.getElementById("btn-synctime").disabled = status;
   document.getElementById("btn-rotate").disabled = status;
+  const pushBtn = document.getElementById("btn-push-summary");
+  if (pushBtn) pushBtn.disabled = status;
 }
 
 function disconnect() {
@@ -193,14 +205,26 @@ function handleNotify(value, idx) {
   const data = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
   const msg = textDecoder.decode(data);
   addLog(bytes2hex(data), '⇓');
+
+  // 图像下发前设备会上报 "mtu=NNN rle=1"
+  if (msg.startsWith('mtu=')) {
+    const n = parseInt(msg.substring(4), 10);
+    if (!isNaN(n) && n > 20) EpdLink.mtu = n - 2;
+    EpdLink.rle = /rle=1/.test(msg);
+    EpdLink.reported = true;
+    addLog(`设备 MTU=${isNaN(n) ? '?' : n}，单块载荷 ${EpdLink.mtu}B` + (EpdLink.rle ? '，支持 RLE' : ''));
+    return;
+  }
+
   if (idx == 0) {
     if (data.length > 12) currentRotate = data[12];
-  } else {
-    if (msg.startsWith('t=') && msg.length > 2) {
-      const t = parseInt(msg.substring(2)) + new Date().getTimezoneOffset() * 60;
-      addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
-      addLog(`本地时间: ${new Date().toLocaleString()}`);
-    }
+    return;
+  }
+
+  if (msg.startsWith('t=') && msg.length > 2) {
+    const t = parseInt(msg.substring(2)) + new Date().getTimezoneOffset() * 60;
+    addLog(`远端时间: ${new Date(t * 1000).toLocaleString()}`);
+    addLog(`本地时间: ${new Date().toLocaleString()}`);
   }
 }
 

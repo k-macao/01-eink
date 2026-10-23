@@ -32,6 +32,30 @@
             </div>
         </fieldset>
         <fieldset>
+            <legend>AI 总结推送</legend>
+            <div class="flex-container">
+                <div class="flex-group">
+                    <label for="sum-size">屏幕尺寸</label>
+                    <select id="sum-size" onchange="previewSummary()">
+                        <option value="400x300" selected>4.2 寸 400×300</option>
+                        <option value="296x128">2.9 寸 296×128</option>
+                        <option value="250x122">2.13 寸 250×122</option>
+                    </select>
+                    <label><input type="checkbox" id="sum-rotate"> 旋转 180°</label>
+                    <label><input type="checkbox" id="sum-color"> 三色（黑白红）</label>
+                </div>
+            </div>
+            <div class="flex-container">
+                <div class="flex-group">
+                    <button type="button" class="secondary" onclick="previewSummary()">预览</button>
+                    <button id="btn-push-summary" type="button" class="primary" onclick="pushLatestSummary()">推送最新AI总结</button>
+                </div>
+            </div>
+            <canvas id="sum-preview"
+                style="display:none;width:100%;max-width:420px;margin-top:10px;border:1px solid #E4E4E7;image-rendering:pixelated;"></canvas>
+            <div id="sum-status" style="margin-top:8px;font-size:0.9rem;color:#666;">尚未生成预览</div>
+        </fieldset>
+        <fieldset>
             <legend>每天自动蓝牙更新</legend>
             <div class="flex-container">
                 <div class="flex-group">
@@ -46,6 +70,7 @@
         </fieldset>
     </div>
     <script type="text/javascript" src="js/main.js"></script>
+    <script type="text/javascript" src="js/ai-summary.js"></script>
 </body>
 
 </html>
