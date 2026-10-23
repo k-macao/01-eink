@@ -13,6 +13,9 @@ const EpdCmd = {
   SET_ROTATE: 0x21,
 };
 
+const MAX_CONNECT_RETRY = 3;
+const CONNECT_RETRY_DELAY_MS = 2000;
+
 function hex2bytes(hex) {
   for (var bytes = [], c = 0; c < hex.length; c += 2)
     bytes.push(parseInt(hex.substr(c, 2), 16));
@@ -171,7 +174,7 @@ function timeoutHandler() {
   }
 }
 
-async function connect() {
+async function connect(retryCount = 0) {
   if (bleDevice == null || epdCharacteristic != null) return;
 
   try {
@@ -184,7 +187,14 @@ async function connect() {
     addLog('  找到 Characteristic');
   } catch (e) {
     console.error(e);
-    if (e.message) addLog("connect: " + e.message);
+    const msg = e.message ? e.message : String(e);
+    addLog("connect: " + msg);
+    if (retryCount < MAX_CONNECT_RETRY) {
+      addLog("连接失败，" + (CONNECT_RETRY_DELAY_MS / 1000) + " 秒后重试 (" + (retryCount + 1) + "/" + MAX_CONNECT_RETRY + ")...");
+      await new Promise(r => setTimeout(r, CONNECT_RETRY_DELAY_MS));
+      return connect(retryCount + 1);
+    }
+    addLog("连接多次失败，请排查：设备蓝牙是否已开启、是否已与本机配对、设备是否在附近、是否被其他手机/电脑占用、浏览器是否支持 Web Bluetooth。");
     disconnect();
     return;
   }
@@ -197,9 +207,18 @@ async function connect() {
   } catch (e) {
     console.error(e);
     if (e.message) addLog("startNotifications: " + e.message);
+    disconnect();
+    return;
   }
 
-  await write(EpdCmd.INIT);
+  try {
+    await write(EpdCmd.INIT);
+  } catch (e) {
+    console.error(e);
+    if (e.message) addLog("init: " + e.message);
+    disconnect();
+    return;
+  }
 
   document.getElementById("btn-connect").innerHTML = '断开';
   updateButtonStatus();
