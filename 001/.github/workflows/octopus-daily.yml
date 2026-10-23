@@ -1,0 +1,178 @@
+name: 🐙 章鱼AI · 每日自动推送
+
+on:
+  schedule:
+    # 每天北京时间 09:00 至 21:00 每两小时自动运行（对应 UTC 01:00、03:00、05:00、07:00、09:00、11:00、13:00，共 7 次）
+    # 09:00 早盘前 + 21:00 晚间复盘：推送到微信
+    # 11:00、13:00、15:00、17:00、19:00：盘中与盘后静默更新数据与网页（--no-push），不打扰微信
+    - cron: "0 1-13/2 * * *"
+
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "仅采集预览，不推送"
+        type: boolean
+        default: false
+        required: false
+      no_push:
+        description: "仅更新数据与生成日报，不推送到微信"
+        type: boolean
+        default: false
+        required: false
+      llm_check:
+        description: "只探活大模型 API（验证 Key / 端点 / 模型名，不生成日报）"
+        type: boolean
+        default: false
+        required: false
+      hk7_only:
+        description: "只跑 AI 七日港股走势分析概率（研究模式，不推送）"
+        type: boolean
+        default: false
+        required: false
+
+# 与「🐙 章鱼AI · 手动抓取推送」共用一把锁：两个作业生成同一批文件、推同一个分支，
+# 并行跑必然有一方 `git push` 被拒（2026-10-03 18:39 UTC 实测：本作业与手动作业相差
+# 37 秒启动，手动方先推成功，本作业被拒 → 日报与留痕全部没进库）。
+# 排队而不取消：取消会打断「已经推到微信、还没提交留痕」的那一轮。
+concurrency:
+  group: octopus-report
+  cancel-in-progress: false
+
+jobs:
+  octopus-daily:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # 量化引擎（21 只标的日线 + 沪深港通 + 港股成交）需要额外抓取时间
+    # 声明仓库写入权限，解决git push 403问题
+    permissions:
+      contents: write
+
+    steps:
+      - name: 📥 检出仓库
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🐍 配置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 安装依赖
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip --quiet
+          python -m pip install --quiet -r requirements.txt
+
+      - name: 🐙 运行章鱼AI流水线
+        env:
+          PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
+          # 一对多群组推送（2026-10-23 起默认）：群组编码优先取 Secret PUSHPLUS_TOPIC；
+          # Secret 没配时兜底用仓库群组 oai.1（下面这个字面量就是兜底值，换群改这里）。
+          PUSHPLUS_TOPIC: ${{ secrets.PUSHPLUS_TOPIC || 'oai.1' }}
+          # 推送模式：one2many（默认，一对多群组）/ one2one（一对一 直发自己）。
+          PUSHPLUS_MODE: ${{ vars.PUSHPLUS_MODE || 'one2many' }}
+          # 策略研判内的 MACD（无需密钥）：优先库 / 本次日线，缺项才取免费源。
+          OCTOPUS_MACD: ${{ vars.OCTOPUS_MACD || '1' }}
+          OCTOPUS_MACD_SYMBOLS: ${{ vars.OCTOPUS_MACD_SYMBOLS }}
+          # ◧ AI 七日港股走势分析概率的大模型（默认 DeepSeek：https://api.deepseek.com）
+          # Key 按原名透传，由 output/hk_seven_day.py 按「本仓专用名 → 厂商通用名」回落取用：
+          # 仓库里既有的 DEEPSEEK_API_KEY 不必改名换值，配好就能被这一栏用上。
+          # 三个都没有 → 该栏目整体缺席（不进审计），日报其它栏目照常；
+          # 想「没有 Key 也看量化基准」→ OCTOPUS_HK7_FALLBACK: "1"
+          OCTOPUS_LLM_API_KEY: ${{ secrets.OCTOPUS_LLM_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          # 下面两个都可以留空：留空 = https://api.deepseek.com/v1；模型留空则按候选链
+          # （deepseek-flash → deepseek-v4-flash → deepseek-chat …）逐个试，只有「模型名不对」才换下一个
+          OCTOPUS_LLM_BASE_URL: ${{ vars.OCTOPUS_LLM_BASE_URL }}
+          OCTOPUS_LLM_MODEL: ${{ vars.OCTOPUS_LLM_MODEL }}
+          # JSON 被截断时调大（如 2048）；留空 = 用服务端默认
+          OCTOPUS_LLM_MAX_TOKENS: ${{ vars.OCTOPUS_LLM_MAX_TOKENS }}
+          # OCTOPUS_LLM_TIMEOUT: "60"
+          # OCTOPUS_HK7_FALLBACK: "1"
+        run: |
+          set -euo pipefail
+          EVENT_NAME="${{ github.event_name }}"
+          # 兜底空值，兼容定时触发场景
+          DRY_RUN="${{ github.event.inputs.dry_run || 'false' }}"
+          NO_PUSH="${{ github.event.inputs.no_push || 'false' }}"
+          LLM_CHECK="${{ github.event.inputs.llm_check || 'false' }}"
+          HK7_ONLY="${{ github.event.inputs.hk7_only || 'false' }}"
+
+          CURRENT_HOUR=$(TZ='Asia/Shanghai' date +%H)
+
+          # 只报「有没有配、配在哪个变量名上」，绝不回显 Key 本身
+          LLM_KEY_SOURCE=""
+          for name in OCTOPUS_LLM_API_KEY DEEPSEEK_API_KEY OPENAI_API_KEY; do
+            if [ -n "${!name:-}" ]; then LLM_KEY_SOURCE="$name"; break; fi
+          done
+          if [ -n "$LLM_KEY_SOURCE" ]; then
+            echo "◧ 大模型：已配置 Key（来源 ${LLM_KEY_SOURCE} · 端点 ${OCTOPUS_LLM_BASE_URL:-默认 https://api.deepseek.com/v1} · 模型 ${OCTOPUS_LLM_MODEL:-未指定 → 候选链自动挑}）"
+          else
+            echo "◧ 大模型：未配置 Key（OCTOPUS_LLM_API_KEY / DEEPSEEK_API_KEY / OPENAI_API_KEY 都没有）→ AI 七日港股走势分析概率整栏缺席"
+            echo "   修复：仓库 Settings → Secrets and variables → Actions 新增 DEEPSEEK_API_KEY；或用 llm_check 勾选手动运行先探活"
+          fi
+
+          if [ "$LLM_CHECK" = "true" ]; then
+            echo "运行模式：大模型 API 探活（不生成日报）"
+            python3 output/pipeline.py --llm-check
+          elif [ "$HK7_ONLY" = "true" ]; then
+            echo "运行模式：只跑 AI 七日港股走势分析概率（研究模式，不推送）"
+            python3 output/pipeline.py --hk7-only
+          elif [ "$DRY_RUN" = "true" ]; then
+            echo "运行模式：预览模式（不推送）"
+            python3 output/pipeline.py --dry-run
+          elif [ "$NO_PUSH" = "true" ]; then
+            echo "运行模式：手动指定静默更新（--no-push，不推微信）"
+            python3 output/pipeline.py --no-push
+          elif [ "$EVENT_NAME" = "schedule" ] && [ "$CURRENT_HOUR" != "09" ] && [ "$CURRENT_HOUR" != "10" ] && [ "$CURRENT_HOUR" != "21" ] && [ "$CURRENT_HOUR" != "22" ]; then
+            echo "运行模式：定时盘中静默更新（当前北京时间 ${CURRENT_HOUR} 时，不推微信，仅更新数据与网页）"
+            python3 output/pipeline.py --no-push
+          else
+            echo "运行模式：全流程生成并推送微信（当前北京时间 ${CURRENT_HOUR} 时）"
+            python3 output/pipeline.py
+          fi
+
+      - name: 📤 提交生成的日报
+        # 即使推送失败，只要文件生成了就提交
+        if: always()
+        run: |
+          set -euo pipefail
+          # 通配符匹配失败不报错，兼容无日报文件的场景
+          # 留痕 JSON 必须一起提交，否则「预测留痕 / 命中率」每次都会从零开始：
+          #   hk7_forecast.json    → ◧ AI 七日港股走势分析概率（满 7 个交易日结算）
+          #   weekly_forecast.json → 🗓️ 每周量化走势预测（满 5 个交易日结算）
+          #
+          # 提交与推送交给 tools/safe_push.sh：本作业要跑 2~15 分钟，期间 main 可能被
+          # PR 合并 / 手动抓取推送 / 市场数据库作业推动，裸 `git push origin HEAD` 会被拒
+          # （2026-10-02~04 实测三次，其中一次与 PR 合并只差 5 秒，详见
+          #   自动更新推送被拒-原因诊断.md）。被拒后它把本次改动重放到远端最新提交之上：
+          #   · 日报 HTML 以本次为准（本次是更晚完成的一轮）；
+          #   · 留痕 JSON 按 tools/merge_generated.py 的规则并集（两边条目都不丢）；
+          #   · 别人的代码 / 文档一律保留远端版本，绝不回退。
+          COMMIT_TIME=$(TZ='Asia/Macau' date +'%Y-%m-%d %H:%M')
+          bash tools/safe_push.sh \
+            --branch "${GITHUB_REF_NAME:-main}" \
+            --message "📰 自动更新 ${COMMIT_TIME}" \
+            -- output/daily_report_*.html output/latest.html \
+               output/sentiment_history.json output/news_history.json \
+               output/quant_history.json output/hk7_forecast.json \
+               output/weekly_forecast.json
+
+      - name: 🧯 推送失败兜底：把生成物存成 Artifact
+        # 万一还是推不上去（远端持续在动 / 权限或保护分支问题），至少把这轮的日报与
+        # 预测留痕留下来，可以人工补提交，不至于「白跑一轮、留痕从零开始」
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: octopus-unpushed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            output/daily_report_*.html
+            output/latest.html
+            output/sentiment_history.json
+            output/news_history.json
+            output/quant_history.json
+            output/hk7_forecast.json
+            output/weekly_forecast.json
+          if-no-files-found: ignore
+          retention-days: 14

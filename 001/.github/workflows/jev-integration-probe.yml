@@ -1,0 +1,253 @@
+name: 🧪 Jev 开源模型 · 接入探针
+
+# 用途：回答「GitHub 开源的 Jev 类（类型化决策）模型能不能接进日报」，并把结论固化成回归。
+#
+#   ① protocol-offline（约 30 秒，零依赖）：
+#        用 tools/jev_mock_server.py 当协议夹具，把接入层跑完——配置解析、闭合输入自检、
+#        协议调用、返回结构校验、概率对账（收敛 / 夹边 / 回退）、缺席降级、留痕结算。
+#        不需要模型权重、不需要 Key、不需要外网（只用 127.0.0.1 回环）。
+#   ② edgejev-runtime（约 1 分钟）：
+#        从 PyPI 装开源本地运行时（onnxruntime + tokenizers + numpy，无 torch），
+#        验证日报的 CI 机器装得动；顺便探一次 Hugging Face 可达性——那是真权重唯一的
+#        外网依赖，也是本仓库运行环境能否落到生产的关键前提。
+#   ③ real-model（10~20 分钟，默认不跑）：
+#        从 Hugging Face 拉真实权重（laya mmBERT-base 322M → ONNX int8 约 324 MB），
+#        起 edgejev serve 的 /v1/systemone，再让接入层用真实概率跑一遍。
+#        触发方式：手动 Run workflow 且勾选 build_model，或在提交信息里带 [jev-model]。
+#
+# 本工作流只读仓库、不提交、不改任何文件；产出物（可选）是构建好的 ONNX 目录。
+on:
+  workflow_dispatch:
+    inputs:
+      build_model:
+        description: "从 Hugging Face 构建真实模型（laya int8，下载约 1.3GB，10~20 分钟）"
+        type: boolean
+        default: false
+        required: false
+      upload_model:
+        description: "把构建好的 ONNX 目录作为 artifact 上传（约 324MB，保留 7 天）"
+        type: boolean
+        default: true
+        required: false
+  push:
+    paths:
+      - "output/jev_bridge.py"
+      - "tools/jev_mock_server.py"
+      - "tests/test_jev_bridge.py"
+      - ".github/workflows/jev-integration-probe.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: jev-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  # ① 接入层离线回归：协议、护栏、留痕——与权重无关的那几层全在这里钉死
+  protocol-offline:
+    name: ① 接入层离线回归（无权重 / 无 Key / 无外网）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 📥 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 🐍 配置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 🧪 跑接入层回归（纯标准库）
+        run: python3 tests/test_jev_bridge.py
+
+      - name: 🌀 协议回环自检（回声服务 + 接入层 CLI）
+        run: |
+          set -euo pipefail
+          python3 tools/jev_mock_server.py --port 8811 --scenario extreme > /tmp/mock.log 2>&1 &
+          for i in $(seq 20); do
+            curl -sf http://127.0.0.1:8811/ready >/dev/null && break
+            sleep 0.3
+          done
+          python3 output/jev_bridge.py --check --base http://127.0.0.1:8811
+          python3 output/jev_bridge.py --demo  --base http://127.0.0.1:8811
+
+      - name: 🛡️ 断言护栏生效（极端概率必须被收敛到基准 ±20pp）
+        run: |
+          set -euo pipefail
+          python3 output/jev_bridge.py --demo --base http://127.0.0.1:8811 --json > /tmp/demo.json
+          python3 - <<'PY'
+          import json
+          data = json.load(open("/tmp/demo.json", encoding="utf-8"))
+          merged = data["targets"][0]["merged"]
+          assert merged["converged"] is True, merged
+          assert abs(merged["p_up"] - (merged["quant_p_up"] + 0.20)) < 1e-9, merged
+          assert 0.05 <= merged["p_up"] <= 0.95, merged
+          assert merged["source"] in ("noul", "choice"), merged
+          print("✅ 收敛护栏成立：", merged["note"])
+          PY
+
+  # ② 运行时可用性：PyPI 装得动、ONNX Runtime 起得来、Hugging Face 通不通
+  edgejev-runtime:
+    name: ② 开源本地运行时（PyPI 安装 + HF 可达性）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 🐍 配置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 📦 安装开源本地运行时（不装 torch）
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip --quiet
+          pip install --quiet edgejev
+          pip list 2>/dev/null | grep -Ei "^(edgejev|onnxruntime|tokenizers|numpy) " || true
+
+      - name: 🖥️ 运行时自检
+        run: |
+          set -euo pipefail
+          edgejev info
+          python - <<'PY'
+          import onnxruntime as ort
+          print("onnxruntime", ort.__version__, "| providers", ort.get_available_providers())
+          PY
+
+      - name: 🌐 探测 Hugging Face 可达性（真权重唯一的外网依赖）
+        run: |
+          python - <<'PY'
+          import json, urllib.request
+          url = "https://huggingface.co/api/models/convaiinnovations/laya-multilingual"
+          try:
+              with urllib.request.urlopen(url, timeout=25) as resp:
+                  info = json.loads(resp.read().decode("utf-8", "replace"))
+              print("✅ Hugging Face 可达，HTTP", resp.status,
+                    "| downloads:", info.get("downloads"),
+                    "| lastModified:", info.get("lastModified"))
+          except Exception as exc:
+              print("⚠️ Hugging Face 不可达：", type(exc).__name__, exc)
+              print("（这会让真权重那一步无法在 CI 完成；接入层回归不受影响）")
+          PY
+
+  # ③ 真权重端到端（手动 / 提交信息带 [jev-model] 才跑）
+  real-model:
+    name: ③ 真权重端到端（laya int8 → /v1/systemone → 接入层）
+    needs: edgejev-runtime
+    if: >-
+      (github.event_name == 'workflow_dispatch' && inputs.build_model) ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[jev-model]'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: 📥 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 🐍 配置 Python 环境
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 💾 缓存构建依赖（torch 约 2.5GB）
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: jev-build-pip-${{ runner.os }}-${{ hashFiles('.github/workflows/jev-integration-probe.yml') }}
+
+      - name: 📦 安装构建依赖（torch / transformers / laya / onnx）
+        # 注意：直接 pip install "edgejev[build]" 在 Linux 上会解析出 CUDA 版 torch，
+        # 连带 nvidia-cu13 全家桶（数 GB，构建用不上 GPU）。先用 PyTorch CPU 索引把
+        # torch 装上，后面的依赖解析就不会再拉 CUDA 轮子——runner 磁盘和时间都省下来。
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip --quiet
+          pip install --quiet torch --index-url https://download.pytorch.org/whl/cpu \
+            || pip install --quiet torch
+          pip install --quiet "edgejev[build]"
+          python -c "import torch; print('torch', torch.__version__, '| CUDA:', torch.cuda.is_available())"
+
+      - name: 🏗️ 构建本地 ONNX 模型（laya 优先，失败自动退回 kev）
+        run: |
+          set -uo pipefail
+          MODEL_DIR=""
+          for backend in laya kev; do
+            echo "::group::edgejev build --backend ${backend}"
+            if edgejev build --backend "${backend}" --out "jev-${backend}"; then
+              MODEL_DIR="jev-${backend}"
+              echo "✅ ${backend} 构建成功：${MODEL_DIR}"
+              echo "MODEL_BACKEND=${backend}" >> "$GITHUB_ENV"
+              echo "::endgroup::"
+              break
+            fi
+            echo "⚠️ ${backend} 构建失败，尝试下一个后端"
+            echo "::endgroup::"
+          done
+          if [ -z "${MODEL_DIR}" ]; then echo "❌ laya / kev 都没构建成功"; exit 1; fi
+          echo "MODEL_DIR=${MODEL_DIR}" >> "$GITHUB_ENV"
+          du -sh "${MODEL_DIR}"
+
+      - name: 🚀 起本地协议服务（POST /v1/systemone）
+        run: |
+          set -euo pipefail
+          nohup edgejev serve --model "${MODEL_DIR}" --host 127.0.0.1 --port 8009 \
+            > /tmp/serve.log 2>&1 &
+          for i in $(seq 60); do
+            curl -sf http://127.0.0.1:8009/ready >/dev/null && break
+            sleep 1
+          done
+          echo "--- /ready ---"
+          curl -s http://127.0.0.1:8009/ready; echo
+          cat /tmp/serve.log
+
+      - name: 🔌 接入层端到端（真权重、真概率）
+        run: |
+          set -euo pipefail
+          python3 output/jev_bridge.py --check --base http://127.0.0.1:8009
+          python3 output/jev_bridge.py --demo --base http://127.0.0.1:8009 --json \
+            | tee /tmp/real_demo.json
+
+      - name: ⏱️ 单题延迟实测（4 vCPU runner）
+        run: edgejev bench --model "${MODEL_DIR}" --iters 20 || true
+
+      - name: 📝 汇总到 job summary
+        if: always()
+        run: |
+          set -uo pipefail
+          cat > /tmp/summarize.py <<'PY'
+          import json
+          try:
+              data = json.load(open("/tmp/real_demo.json", encoding="utf-8"))
+          except Exception as exc:
+              print("（无 demo 输出：%s）" % exc)
+              raise SystemExit(0)
+          print("| 标的 | 模型原值 | 合并后 P(7日涨) | 量化基准 | 收敛 | 来源 |")
+          print("|---|---|---|---|---|---|")
+          for t in data.get("targets", []):
+              m = t.get("merged") or {}
+              print("| %s | %s | %s | %s | %s | %s |" % (
+                  t.get("name") or t.get("symbol"), m.get("raw_p_up"), m.get("p_up"),
+                  m.get("quant_p_up"), m.get("converged"), m.get("source")))
+          print("")
+          print("```json")
+          print(json.dumps(data.get("targets", [{}])[0].get("answers") or
+                           data.get("targets", [{}])[0].get("error"),
+                           ensure_ascii=False, indent=1))
+          print("```")
+          PY
+          {
+            echo "## 🧪 Jev 真权重探针结果"
+            echo ""
+            echo "- 后端：\`${MODEL_BACKEND:-unknown}\`，模型目录：\`${MODEL_DIR:-未构建}\`"
+            echo "- 模型体积：$(du -sh "${MODEL_DIR:-.}" 2>/dev/null | cut -f1)"
+            echo ""
+            python3 /tmp/summarize.py 2>/dev/null || echo "（汇总脚本失败）"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 📤 上传构建好的模型（可直接拷去内网离线用）
+        if: always() && env.MODEL_DIR != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: jev-onnx-${{ env.MODEL_BACKEND }}
+          path: ${{ env.MODEL_DIR }}
+          retention-days: 7
+          if-no-files-found: warn
