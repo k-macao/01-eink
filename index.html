@@ -4,7 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>eMemoLog</title>
-	<link rel="stylesheet" href="css/main.css?v=20261024a">
+	<link rel="stylesheet" href="css/main.css?v=20261025a">
 </head>
 
 <body>
@@ -41,16 +41,37 @@
                         <option value="296x128">2.9 寸 296×128</option>
                         <option value="250x122">2.13 寸 250×122</option>
                     </select>
+                    <label for="sum-font">字体</label>
+                    <select id="sum-font" onchange="previewSummary()">
+                        <option value="hei" selected>黑体加粗</option>
+                        <option value="song">宋体加粗</option>
+                        <option value="kai">楷体加粗</option>
+                        <option value="mono">等宽点阵</option>
+                    </select>
+                    <label for="sum-size-scale">字号</label>
+                    <select id="sum-size-scale" onchange="previewSummary()">
+                        <option value="small">小（内容优先）</option>
+                        <option value="normal" selected>标准</option>
+                        <option value="large">大（字大优先）</option>
+                    </select>
+                    <label for="sum-zoom">预览</label>
+                    <select id="sum-zoom" onchange="previewSummary()">
+                        <option value="1" selected>1×</option>
+                        <option value="2">2×</option>
+                        <option value="3">3×</option>
+                    </select>
                     <label><input type="checkbox" id="sum-rotate"> 旋转 180°</label>
                     <label><input type="checkbox" id="sum-color"> 三色（黑白红）</label>
                 </div>
             </div>
             <div class="flex-container">
                 <div class="flex-group">
-                    <button type="button" class="secondary" onclick="previewSummary()">预览</button>
+                    <button type="button" class="secondary" onclick="previewSummary(true)">重新抓取并预览</button>
                     <button id="btn-push-summary" type="button" class="primary" onclick="pushLatestSummary()">推送最新AI总结</button>
+                    <button id="btn-push-sample" type="button" class="secondary" onclick="pushFontSample()">推送字体样张</button>
                 </div>
             </div>
+            <div class="sum-hint">字体不清楚时，先「推送字体样张」到设备上比对，再回来选字号 / 字体。</div>
             <canvas id="sum-preview"
                 style="display:none;width:100%;max-width:420px;margin-top:10px;border:1px solid #E4E4E7;image-rendering:pixelated;"></canvas>
             <div id="sum-status" style="margin-top:8px;font-size:0.9rem;color:#666;">尚未生成预览</div>
@@ -69,8 +90,8 @@
             <div id="auto-status" style="margin-top:8px; font-size:0.9rem; color:#666;">自动更新：已停止</div>
         </fieldset>
     </div>
-    <script type="text/javascript" src="js/main.js?v=20261024a"></script>
-    <script type="text/javascript" src="js/ai-summary.js?v=20261024a"></script>
+    <script type="text/javascript" src="js/main.js?v=20261025a"></script>
+    <script type="text/javascript" src="js/ai-summary.js?v=20261025a"></script>
 </body>
 
 </html>
