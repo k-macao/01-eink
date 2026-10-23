@@ -135,16 +135,47 @@ test('卡片用「窗口摘要」取代「风险关注 / AI 结论」', () => {
   assert.strictEqual(labels.join('/'), '今日盘点/明日关注/窗口摘要');
   assert.ok(!labels.includes('风险关注'));
   assert.ok(!labels.includes('AI 结论'));
-  // 摘要里的数字必须都能在日报原文里找到，不能是编的
-  const summary = call('extractSummary', README_HTML);
+  // 摘要里的日子必须都能在日报原文里找到，不能是编的
   const winText = card.lines[2].text;
-  const want = [
-    summary.window.find(p => p.label === '时间点合计').value.match(/^\d+/)[0],
-    '10-29',
-  ];
-  for (const token of want) {
-    assert.ok(winText.includes(token), '窗口摘要缺数字：' + token + ' | ' + winText);
+  assert.ok(/10-2[6-9]|10-30/.test(winText), '应含未来一周的日期：' + winText);
+  for (const md of winText.match(/\d{2}-\d{2}/g) || []) {
+    assert.ok(README_HTML.includes(md), '窗口摘要里的日期在原文中不存在：' + md);
   }
+});
+
+test('窗口摘要只覆盖报告日之后的 5 个工作日', () => {
+  const summary = call('extractSummary', README_HTML);
+  const card = call('buildCard', summary);
+  const winText = card.lines[2].text;
+
+  const days = call('nextFiveWeekdays', summary.date);
+  assert.deepStrictEqual(Array.from(days), ['10-26', '10-27', '10-28', '10-29', '10-30']);
+
+  // 跨月 / 跨年也不能漏：区间两头就是这五天的首尾
+  assert.ok(winText.startsWith(days[0] + '~' + days[days.length - 1]), '区间不对：' + winText);
+  for (const md of winText.match(/\d{2}-\d{2}/g) || []) {
+    assert.ok(days.includes(md), '超出一周范围：' + md + ' | ' + winText);
+  }
+  // 30 天口径的内容不该再出现在卡上
+  assert.ok(!/个时间点|最密|★★★/.test(winText), '窗口摘要混进了 30 天口径：' + winText);
+
+  // 每天只留一条，且都在原文里
+  const picked = call('windowDatedItems', summary.window).filter(it => days.includes(it.md));
+  assert.ok(picked.length >= 3, '十条内应挑出条目：' + picked.length);
+});
+
+test('五天内没有日程时退回 30 天口径', () => {
+  const only30 = [{ label: '时间窗口', value: '2026-10-23 ~ 2026-11-22 · 未来 30 天' }];
+  assert.strictEqual(call('composeFiveDayVariants', only30, '2026-10-23').length, 0);
+
+  // 日期都在五天之内的条目一律不取（10-31 已经开始下一周）
+  const far = [{ label: '央行议息 / 重要会议', value: '10-31 美联储议息会议、11-07 央行议息会议' }];
+  assert.strictEqual(call('composeFiveDayVariants', far, '2026-10-23').length, 0);
+  const near = [{ label: '央行议息 / 重要会议', value: '10-28 美联储议息会议' }];
+  assert.deepStrictEqual(
+    Array.from(call('composeFiveDayVariants', near, '2026-10-23')),
+    ['10-26~10-30 · 10-28 美联储议息', '10-28 美联储议息'],
+  );
 });
 
 test('窗口摘要：解析时间节点栏目的表，压成一句话', () => {

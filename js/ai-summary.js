@@ -193,22 +193,32 @@ function extractWindowSummary(html) {
   return pairs.length ? pairs : null;
 }
 
-/** 「10-26 中国共产党第二十届中央委员会第五次全体会议」→「10-26 五中全会」 */
-function shortEventName(text) {
+/** 去掉日期前缀、把长名字压短：「中国共产党第二十届…第五次全体会议」→「五中全会」 */
+function compressEventName(text) {
   let s = String(text || '').trim();
   if (!s || s.indexOf('窗口内暂无') >= 0) return '';
   s = s
+    .replace(/^\d{1,2}-\d{1,2}\s*/, '')
     .replace(/中国共产党/g, '')
     // 「二十届中央委员会第五次全体会议」→「五中全会」：屏上只留最认得出的部分
     .replace(/第([一二三四五六七八九十\d]+)届中央委员会第([一二三四五六七八九十\d]+)次全体会议/g, '$2中全会')
     .replace(/议息会议/g, '议息')
     .replace(/全体会议/g, '全会')
+    // 经济读数常带一串口径：「GDP:不变价:环比折年率:季调」→「GDP」，
+    // 「ADP就业人数(万人)」→「ADP就业人数」
+    .replace(/[:：（(].*$/, '')
     .replace(/\s+/g, ' ')
     .trim();
+  // 截断时别把行尾留成半个括号 / 冒号
+  return s.length > 12 ? s.slice(0, 11).replace(/[\s([（:：,，、·]+$/, '') + '…' : s;
+}
 
-  const m = /^(\d{1,2}-\d{1,2})\s*(.+)$/.exec(s);
-  if (m) return m[1] + ' ' + (m[2].length > 9 ? m[2].slice(0, 8) + '…' : m[2]);
-  return s.length > 12 ? s.slice(0, 11) + '…' : s;
+/** 「10-26 中国共产党第二十届中央委员会第五次全体会议」→「10-26 五中全会」 */
+function shortEventName(text) {
+  const md = /^(\d{1,2}-\d{1,2})/.exec(String(text || '').trim());
+  const name = compressEventName(text);
+  if (!name) return '';
+  return md ? md[1] + ' ' + name : name;
 }
 
 /**
@@ -278,6 +288,96 @@ function windowSegments(pairs) {
   return seg;
 }
 
+/** 带日期的三类条目：会议 / 中国读数 / 美国读数 */
+const DATED_WINDOW_LABELS = [
+  '央行议息 / 重要会议', '央行议息/重要会议', '中国关键读数', '美国关键读数',
+];
+
+/** 把条目串拆开：「10-26 五中全会、10-28 美联储议息 等 9 项」→ [{md,name,score}] */
+function windowDatedItems(pairs) {
+  const out = [];
+  (pairs || []).forEach(p => {
+    if (DATED_WINDOW_LABELS.indexOf(p.label) < 0) return;
+    String(p.value || '')
+      .replace(/等\s*\d+\s*项\s*$/, '')
+      .split(/[、，]/)
+      .forEach(raw => {
+        const t = raw.trim();
+        const md = /^(\d{1,2}-\d{1,2})(?!\d)/.exec(t);
+        const name = compressEventName(t);
+        if (!md || !name) return;
+        out.push({ md: md[1], name, score: eventWeight(t) });
+      });
+  });
+  return out;
+}
+
+/** 「2026-10-23」之后 5 个工作日（跳过周末）；日期不合法返回 null */
+function nextFiveWeekdays(dateISO) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateISO || ''));
+  if (!m) return null;
+  const p2 = v => String(v).padStart(2, '0');
+  const out = [];
+  for (let i = 1; i <= 30 && out.length < 5; i++) {
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]) + i * 86400000);
+    const dow = d.getUTCDay();
+    if (dow === 0 || dow === 6) continue;
+    out.push(p2(d.getUTCMonth() + 1) + '-' + p2(d.getUTCDate()));
+  }
+  return out.length === 5 ? out : null;
+}
+
+/**
+ * 「只显示未来五天」的那一版窗口摘要。
+ *
+ * 日报的窗口摘要表按 30 天铺开，屏上只读得完最近这周。这里把会议 / 中美国关键读数
+ * 里带 MM-DD 的条目按「报告日之后的 5 个工作日」筛一遍，一天只留最重要的一条，
+ * 日期都来自日报原文，不自己推算节假日。
+ *
+ * 五天内一条都没有（淡季）时返回 []，由调用方退回 30 天口径。
+ */
+function composeFiveDayVariants(pairs, dateISO) {
+  const days = nextFiveWeekdays(dateISO);
+  if (!days) return [];
+  const keep = new Set(days);
+
+  const picked = [];
+  const at = {};
+  windowDatedItems(pairs).forEach(it => {
+    if (!keep.has(it.md)) return;
+    if (!(it.md in at)) { at[it.md] = picked.length; picked.push(it); return; }
+    if (it.score > picked[at[it.md]].score) picked[at[it.md]] = it;   // 一天只留一条
+  });
+  if (!picked.length) return [];
+
+  picked.sort((a, b) => days.indexOf(a.md) - days.indexOf(b.md));
+  let show = picked;
+  if (show.length > 3) {
+    // 五天都有事时屏幕上放不下，按重要度留 3 天，再排回日期顺序
+    const keepIdx = show.map((it, i) => ({ score: it.score, i }))
+      .sort((a, b) => (b.score - a.score) || (a.i - b.i))
+      .slice(0, 3)
+      .map(x => x.i)
+      .sort((a, b) => a - b);
+    show = keepIdx.map(i => show[i]);
+  }
+
+  const span = days[0] + '~' + days[days.length - 1];
+  const label = it => it.md + ' ' + it.name;
+  const out = [];
+  [
+    [span].concat(show.map(label)),
+    [span].concat(show.slice(0, 2).map(label)),
+    show.map(label),
+    show.slice(0, 2).map(label),
+    show.slice(0, 1).map(label),
+  ].forEach(list => {
+    const text = list.filter(Boolean).join(' · ');
+    if (text && out.indexOf(text) < 0) out.push(text);
+  });
+  return out;
+}
+
 /**
  * 按「信息量从多到少」列出窗口摘要的几档文案。
  * 小屏（296×128 / 250×122）正文只有一行位置，排版层会退到能放下的那一档，
@@ -325,11 +425,13 @@ function buildCard(summary) {
   if (f['明日关注']) lines.push({ label: '明日关注', text: clampText(f['明日关注'], 60) });
 
   // 窗口摘要取代原来的「风险关注」「AI 结论」：那两条又长又常被截，
-  // 屏上读不完；窗口摘要给的是未来 N 天的日程密度与重头戏。
+  // 屏上读不完；窗口摘要只报未来五天，一周的日程刚好读得完。
   if (summary.window && summary.window.length) {
-    // 三档候选：小屏（296×128 / 250×122）只有一行位置，
-    // 就让排版层自动退到「只留关键数字」那一档，而不是把句子腰斩
-    const variants = composeWindowVariants(summary.window);
+    // 只报「未来五天」：屏上读得完的也就这一周，30 天口径留给淡季兜底。
+    // 每档都是整句候选：小屏（296×128 / 250×122）只有一行位置，
+    // 就让排版层自动退到能放下的那一档，而不是把句子腰斩
+    const five = composeFiveDayVariants(summary.window, summary.date);
+    const variants = five.length ? five : composeWindowVariants(summary.window);
     if (variants.length) {
       lines.push({
         label: '窗口摘要',
