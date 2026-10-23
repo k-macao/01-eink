@@ -128,6 +128,74 @@ test('卡片最多 4 条，且内容非空', () => {
   }
 });
 
+test('卡片用「窗口摘要」取代「风险关注 / AI 结论」', () => {
+  const card = call('buildCard', call('extractSummary', README_HTML));
+  const labels = card.lines.map(l => l.label);
+  // 数组来自 vm 沙箱，跨 realm 的 deepStrictEqual 会因原型不同失败，用字符串比
+  assert.strictEqual(labels.join('/'), '今日盘点/明日关注/窗口摘要');
+  assert.ok(!labels.includes('风险关注'));
+  assert.ok(!labels.includes('AI 结论'));
+  // 摘要里的数字必须都能在日报原文里找到，不能是编的
+  const summary = call('extractSummary', README_HTML);
+  const winText = card.lines[2].text;
+  const want = [
+    summary.window.find(p => p.label === '时间点合计').value.match(/^\d+/)[0],
+    '10-29',
+  ];
+  for (const token of want) {
+    assert.ok(winText.includes(token), '窗口摘要缺数字：' + token + ' | ' + winText);
+  }
+});
+
+test('窗口摘要：解析时间节点栏目的表，压成一句话', () => {
+  const summary = call('extractSummary', README_HTML);
+  assert.ok(Array.isArray(summary.window) && summary.window.length >= 3);
+  const labels = summary.window.map(p => p.label);
+  assert.ok(labels.includes('时间窗口'));
+  assert.ok(labels.includes('时间点合计'));
+
+  const text = call('composeWindowSummary', summary.window);
+  assert.ok(/\d+ 个时间点/.test(text), '应含时间点总数：' + text);
+  assert.ok(/最密 \d{2}-\d{2}/.test(text), '应含最密集日：' + text);
+  assert.ok(text.length <= 130, '一句话不应超过 130 字，实际 ' + text.length);
+});
+
+test('pixel 主题的窗口摘要（标签与内容分行）也能解析', () => {
+  const html = fs.readFileSync(path.join(ROOT, '001', 'output', 'daily_report_20260928.html'), 'utf8');
+  const summary = call('extractSummary', html);
+  assert.ok(Array.isArray(summary.window), '应能解析 pixel 版窗口摘要');
+  const labels = summary.window.map(p => p.label);
+  assert.ok(labels.includes('时间窗口'));
+  assert.ok(labels.includes('最密集日'));
+  const text = call('composeWindowSummary', summary.window);
+  // 重头戏要挑对：美联储议息 / 中全会 优先级高于「国民经济运行情况发布会」
+  assert.ok(text.includes('美联储议息'), '应挑出美联储议息：' + text);
+  assert.ok(!text.includes('国民经济运行情况发布会'), '不该挑发布会：' + text);
+});
+
+test('旧日报没有窗口摘要表时退回风险关注 / AI 结论', () => {
+  const html = README_HTML.split('窗口摘要').join('窗口概览');
+  const summary = call('extractSummary', html);
+  assert.strictEqual(summary.window, null);
+  const card = call('buildCard', summary);
+  const labels = card.lines.map(l => l.label);
+  assert.ok(labels.includes('风险关注'));
+  assert.ok(labels.includes('AI 结论'));
+});
+
+test('窗口摘要折行不拆数字与量词、不拆专名', () => {
+  const wrapLines = get('wrapLines');
+  const ctx = createStubContext(400, 300);
+  ctx.font = 'bold 18px sans-serif';
+  const text = '30 天 · 60 个时间点 · ★★★59 · 最密 10-29（8 项） · 10-26 二十届五中全会、10-28 美联储议息';
+  const lines = wrapLines(ctx, text, 276);
+  for (const line of lines) {
+    assert.ok(!/\d$/.test(line.replace(/[·、，]$/, '')), '数字被留在行尾：' + line);
+  }
+  assert.ok(lines.some(l => l.includes('二十届五中全会')), '专名被拆开：' + JSON.stringify(lines));
+  assert.ok(lines.some(l => l.includes('60 个时间点')), '数字与量词被拆开：' + JSON.stringify(lines));
+});
+
 test('三种屏幕尺寸都不越界，字号不低于 10px', () => {
   const card = call('buildCard', call('extractSummary', README_HTML));
   const drawCard = get('drawCard');
@@ -250,4 +318,35 @@ test('偏好记忆只接受下拉里存在的值', () => {
   box.store['epd.sum-font'] = 'mono';
   vm.runInContext('restoreSumPrefs()', box.sandbox);
   assert.strictEqual(box.makeElement('sum-font').value, 'mono');
+});
+
+test('小屏放不下整句时，窗口摘要换成完整的短一档，而不是用省略号腰斩', () => {
+  const card = call('buildCard', call('extractSummary', README_HTML));
+  const win = card.lines[2];
+  assert.ok(Array.isArray(win.alts) && win.alts.length >= 3, '应给出逐级更短的候选');
+  assert.strictEqual(win.alts[0], win.text, '第一档就是完整版');
+
+  for (const [w, h] of [[296, 128], [250, 122]]) {
+    const ctx = createStubContext(w, h);
+    const layout = call('drawCard', ctx, card, w, h, {});
+    const shown = layout.blocks[2].item.text;
+    assert.ok(win.alts.includes(shown), '小屏应是某一档完整短句，实际：' + shown);
+    assert.ok(!/…$/.test(shown), '短句不应以省略号收尾：' + shown);
+    // 短句里的数字仍然全部来自日报原文
+    for (const num of shown.match(/\d+/g) || []) {
+      assert.ok(README_HTML.includes(num), '短句里的数字在原文中不存在：' + num);
+    }
+  }
+});
+
+test('没有「总结」栏目的旧日报：buildCard(null) 返回空卡片而不是抛错', () => {
+  const card = call('buildCard', null);
+  assert.strictEqual(card.lines.length, 0);
+  const ctx = createStubContext(400, 300);
+  const layout = call('drawCard', ctx, card, 400, 300, {});
+  assert.strictEqual(layout.blocks.length, 0);
+  // 页头 / 页脚照画
+  const texts = ctx.texts.map(t => t.text);
+  assert.ok(texts.includes('章鱼 AI · 上水日报'));
+  assert.ok(texts.some(t => t.includes('仅供参考')));
 });
