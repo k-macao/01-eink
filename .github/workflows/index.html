@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>墨水屏日历</title>
+	<link rel="stylesheet" href="css/main.css">
+</head>
+
+<body>
+    <div class="main">
+        <h3>墨水屏日历</h3>
+        <fieldset>
+            <legend>蓝牙连接</legend>
+            <div class="flex-container">
+                <div class="flex-group">
+                    <button id="btn-connect" type="button" class="primary" onclick="preConnect()">连接</button>
+                    <button id="btn-reconnect" type="button" class="secondary" onclick="reConnect()">重连</button>
+					<button type="button" class="secondary" onclick="clearLog()">清空日志</button>
+                </div>
+            </div>
+            <div id="log"></div>
+        </fieldset>
+        <fieldset>
+            <legend>设备控制</legend>
+            <div class="flex-container">
+                <div class="flex-group">
+                    <button id="btn-synctime" type="button" class="primary" onclick="syncTime(1)">同步时间</button>
+                    <button id="btn-rotate" type="button" class="secondary" onclick="rotateScreen()">旋转屏幕</button>
+                </div>
+            </div>
+        </fieldset>
+    </div>
+    <script type="text/javascript" src="js/main.js"></script>
+</body>
+
+</html>
