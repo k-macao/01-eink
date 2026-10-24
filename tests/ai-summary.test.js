@@ -1,9 +1,6 @@
-// AI 总结卡片渲染的纯 JS 测试（不依赖 canvas / 浏览器 / 第三方包）
+// 007 每日研报卡片：纯 JS 测试（不依赖浏览器 canvas 或第三方包）
 //
-//   node --test tests/
-//
-// 用一个「按字符宽度量字」的假 canvas 上下文加载 js/ai-summary.js，
-// 检查解析、折行、字号选择、越界与 1bpp 位平面打包。
+//   node --test tests/ai-summary.test.js
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -13,7 +10,21 @@ const vm = require('node:vm');
 
 const ROOT = path.resolve(__dirname, '..');
 
-/** 假 canvas 2D 上下文：只实现 drawCard / drawFontSample 用到的那几个 API */
+function measuredWidth(text, font) {
+  const m = /(\d+(?:\.\d+)?)px/.exec(font || '16px');
+  const size = m ? parseFloat(m[1]) : 16;
+  let width = 0;
+  for (const ch of String(text)) {
+    const code = ch.codePointAt(0);
+    if (code > 0x2e80) width += size;
+    else if (/[ilj.,;:'!\s]/.test(ch)) width += size * 0.3;
+    else if (/[A-Z0-9]/.test(ch)) width += size * 0.62;
+    else width += size * 0.5;
+  }
+  return width;
+}
+
+/** Only the Canvas APIs used by ai-summary.js. */
 function createStubContext(w, h) {
   const ctx = {
     font: '16px sans-serif',
@@ -24,19 +35,7 @@ function createStubContext(w, h) {
     rects: [],
     _w: w,
     _h: h,
-    measureText(s) {
-      const m = /(\d+(?:\.\d+)?)px/.exec(ctx.font);
-      const size = m ? parseFloat(m[1]) : 16;
-      let width = 0;
-      for (const ch of String(s)) {
-        const code = ch.codePointAt(0);
-        if (code > 0x2e80) width += size;              // 汉字 / 全角标点
-        else if (/[ilj.,;:'!\s]/.test(ch)) width += size * 0.3;
-        else if (/[A-Z0-9]/.test(ch)) width += size * 0.62;
-        else width += size * 0.5;
-      }
-      return { width };
-    },
+    measureText(s) { return { width: measuredWidth(s, ctx.font) }; },
     fillText(t, x, y) { ctx.texts.push({ text: String(t), x, y, font: ctx.font }); },
     fillRect(x, y, rw, rh) { ctx.rects.push({ x, y, w: rw, h: rh }); },
     getImageData() { return { data: new Uint8ClampedArray(w * h * 4).fill(255) }; },
@@ -45,7 +44,7 @@ function createStubContext(w, h) {
   return ctx;
 }
 
-function loadModule() {
+function loadModule(fetchImpl) {
   const ui = {
     'sum-size': '400x300',
     'sum-font': 'hei',
@@ -62,10 +61,8 @@ function loadModule() {
       disabled: null,
       style: {},
       textContent: '',
-      options: Object.keys(ui).includes(id)
-        ? ['400x300', '296x128', '250x122', 'hei', 'song', 'kai', 'mono', 'small', 'normal', 'large', '1', '2', '3']
-          .map(v => ({ value: v })).filter(o => o.value === ui[id] || true)
-        : [],
+      options: ['400x300', '296x128', '250x122', 'hei', 'song', 'kai', 'mono',
+        'small', 'normal', 'large', '1', '2', '3'].map(value => ({ value })),
       addEventListener() {},
       getContext() { return createStubContext(400, 300); },
     };
@@ -78,309 +75,248 @@ function loadModule() {
     console,
     Math,
     Date,
+    JSON,
     Uint8Array,
     Uint8ClampedArray,
-    setTimeout: (fn) => { /* 测试里不跑延迟任务 */ },
-    fetch: async () => { throw new Error('测试环境不联网'); },
+    setTimeout: () => {},
+    fetch: fetchImpl || (async () => { throw new Error('测试环境不联网'); }),
     localStorage: {
-      getItem: k => (k in store ? store[k] : null),
-      setItem: (k, v) => { store[k] = String(v); },
+      getItem: key => (key in store ? store[key] : null),
+      setItem: (key, value) => { store[key] = String(value); },
     },
     document: {
       readyState: 'loading',
       addEventListener() {},
       getElementById: makeElement,
-      createElement: () => makeElement('tmp' + Math.random()),
+      createElement: () => makeElement('tmp-' + Math.random()),
     },
     addLog() {},
   };
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
-  const src = fs.readFileSync(path.join(ROOT, 'js', 'ai-summary.js'), 'utf8');
-  vm.runInContext(src, sandbox);
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', 'ai-summary.js'), 'utf8'), sandbox);
   return { sandbox, makeElement, store };
 }
 
-const { sandbox, makeElement } = loadModule();
+const box = loadModule();
+const { sandbox, makeElement } = box;
 const get = name => vm.runInContext(name, sandbox);
 const call = (name, ...args) => get(name)(...args);
+const REPORT_TEXT = fs.readFileSync(path.join(ROOT, 'data', '007-report.json'), 'utf8');
+const REPORT = JSON.parse(REPORT_TEXT);
 
-const README_HTML = fs.readFileSync(path.join(ROOT, '001', 'output', 'latest.html'), 'utf8');
+function parsedCard() {
+  return call('buildCard', call('parse007Report', REPORT_TEXT));
+}
 
-test('从 latest.html 解析「总结」栏目', () => {
-  const summary = call('extractSummary', README_HTML);
-  assert.ok(summary, '应能找到总结栏目');
-  assert.match(summary.date, /^\d{4}-\d{2}-\d{2}$/);
-  assert.ok(summary.fields['今日盘点']);
-  assert.ok(summary.fields['明日关注']);
-  assert.ok(summary.fields['风险关注']);
-  // 花体装饰行 / emoji 行不应混进字段
-  for (const k of Object.keys(summary.fields)) {
-    assert.ok(!/[█▓▒░]/.test(k), '字段名不应含块字符：' + k);
-  }
+test('读取真实 007 JSON，并保留来源与互补多空概率', () => {
+  const report = call('parse007Report', REPORT_TEXT);
+  assert.strictEqual(report.source.repository, 'k-macao/007');
+  assert.strictEqual(report.probability.long + report.probability.short, 100);
+  assert.strictEqual(report.probability.long, 62);
+  assert.ok(report.topics.length >= 3);
+  assert.ok(report.risks.length >= 2);
+  assert.ok(report.opportunities.length >= 2);
 });
 
-test('卡片最多 4 条，且内容非空', () => {
-  const card = call('buildCard', call('extractSummary', README_HTML));
-  assert.ok(card.lines.length > 0 && card.lines.length <= 4);
-  for (const line of card.lines) {
-    assert.ok(line.label && line.text);
-  }
+test('卡片只显示附图指定的四个栏目', () => {
+  const card = parsedCard();
+  assert.strictEqual(card.lines.map(line => line.label).join('/'),
+    'AI 多空概率/热点话题/风险点/机会点');
+  assert.strictEqual(card.lines.length, 4);
+  assert.match(card.date, /^2026-10-24 21:01 晚报$/);
+  assert.strictEqual(card.section, '007 · 晚报');
+  assert.ok(!card.lines.some(line => /今日盘点|明日关注|窗口摘要|AI 结论/.test(line.label)));
 });
 
-test('卡片用「窗口摘要」取代「风险关注 / AI 结论」', () => {
-  const card = call('buildCard', call('extractSummary', README_HTML));
-  const labels = card.lines.map(l => l.label);
-  // 数组来自 vm 沙箱，跨 realm 的 deepStrictEqual 会因原型不同失败，用字符串比
-  assert.strictEqual(labels.join('/'), '今日盘点/明日关注/窗口摘要');
-  assert.ok(!labels.includes('风险关注'));
-  assert.ok(!labels.includes('AI 结论'));
-  // 摘要里的日子必须都能在日报原文里找到，不能是编的
-  const winText = card.lines[2].text;
-  assert.ok(/10-2[6-9]|10-30/.test(winText), '应含未来一周的日期：' + winText);
-  for (const md of winText.match(/\d{2}-\d{2}/g) || []) {
-    assert.ok(README_HTML.includes(md), '窗口摘要里的日期在原文中不存在：' + md);
-  }
-});
-
-test('窗口摘要只覆盖报告日之后的 5 个工作日', () => {
-  const summary = call('extractSummary', README_HTML);
-  const card = call('buildCard', summary);
-  const winText = card.lines[2].text;
-
-  const days = call('nextFiveWeekdays', summary.date);
-  assert.deepStrictEqual(Array.from(days), ['10-26', '10-27', '10-28', '10-29', '10-30']);
-
-  for (const md of winText.match(/\d{2}-\d{2}/g) || []) {
-    assert.ok(days.includes(md), '超出一周范围：' + md + ' | ' + winText);
-  }
-  // 卡上只有内容：「10-26~10-30」这类区间说明、30 天口径都不该出现
-  assert.ok(!winText.includes('~'), '不该有区间说明：' + winText);
-  assert.ok(!/个时间点|最密|★★★|交易日|未来/.test(winText), '混进了说明文字：' + winText);
-  // 每条都以「MM-DD 名字」开头
-  for (const seg of winText.split(' · ')) {
-    assert.match(seg, /^\d{2}-\d{2} \S/, '条目格式应为「日期 名字」：' + seg);
-  }
-
-  // 每天只留一条，且都在原文里
-  const picked = call('windowDatedItems', summary.window).filter(it => days.includes(it.md));
-  assert.ok(picked.length >= 3, '十条内应挑出条目：' + picked.length);
-});
-
-test('五天内没有日程时退回 30 天口径', () => {
-  const only30 = [{ label: '时间窗口', value: '2026-10-23 ~ 2026-11-22 · 未来 30 天' }];
-  assert.strictEqual(call('composeFiveDayVariants', only30, '2026-10-23').length, 0);
-
-  // 日期都在五天之内的条目一律不取（10-31 已经开始下一周）
-  const far = [{ label: '央行议息 / 重要会议', value: '10-31 美联储议息会议、11-07 央行议息会议' }];
-  assert.strictEqual(call('composeFiveDayVariants', far, '2026-10-23').length, 0);
-  const near = [{ label: '央行议息 / 重要会议', value: '10-28 美联储议息会议' }];
-  assert.deepStrictEqual(
-    Array.from(call('composeFiveDayVariants', near, '2026-10-23')),
-    ['10-28 美联储议息'],
-  );
-});
-
-test('窗口摘要：解析时间节点栏目的表，压成一句话', () => {
-  const summary = call('extractSummary', README_HTML);
-  assert.ok(Array.isArray(summary.window) && summary.window.length >= 3);
-  const labels = summary.window.map(p => p.label);
-  assert.ok(labels.includes('时间窗口'));
-  assert.ok(labels.includes('时间点合计'));
-
-  const text = call('composeWindowSummary', summary.window);
-  assert.ok(/\d+ 个时间点/.test(text), '应含时间点总数：' + text);
-  assert.ok(/最密 \d{2}-\d{2}/.test(text), '应含最密集日：' + text);
-  assert.ok(text.length <= 130, '一句话不应超过 130 字，实际 ' + text.length);
-});
-
-test('pixel 主题的窗口摘要（标签与内容分行）也能解析', () => {
-  const html = fs.readFileSync(path.join(ROOT, '001', 'output', 'daily_report_20260928.html'), 'utf8');
-  const summary = call('extractSummary', html);
-  assert.ok(Array.isArray(summary.window), '应能解析 pixel 版窗口摘要');
-  const labels = summary.window.map(p => p.label);
-  assert.ok(labels.includes('时间窗口'));
-  assert.ok(labels.includes('最密集日'));
-  const text = call('composeWindowSummary', summary.window);
-  // 重头戏要挑对：美联储议息 / 中全会 优先级高于「国民经济运行情况发布会」
-  assert.ok(text.includes('美联储议息'), '应挑出美联储议息：' + text);
-  assert.ok(!text.includes('国民经济运行情况发布会'), '不该挑发布会：' + text);
-});
-
-test('旧日报没有窗口摘要表时退回风险关注 / AI 结论', () => {
-  const html = README_HTML.split('窗口摘要').join('窗口概览');
-  const summary = call('extractSummary', html);
-  assert.strictEqual(summary.window, null);
-  const card = call('buildCard', summary);
-  const labels = card.lines.map(l => l.label);
-  assert.ok(labels.includes('风险关注'));
-  assert.ok(labels.includes('AI 结论'));
-});
-
-test('窗口摘要折行不拆数字与量词、不拆专名', () => {
-  const wrapLines = get('wrapLines');
+test('标题按要求精确改为「章鱼 AI.每日研报」', () => {
+  assert.strictEqual(get('REPORT_TITLE'), '章鱼 AI.每日研报');
   const ctx = createStubContext(400, 300);
-  ctx.font = 'bold 18px sans-serif';
-  const text = '30 天 · 60 个时间点 · ★★★59 · 最密 10-29（8 项） · 10-26 二十届五中全会、10-28 美联储议息';
-  const lines = wrapLines(ctx, text, 276);
-  for (const line of lines) {
-    assert.ok(!/\d$/.test(line.replace(/[·、，]$/, '')), '数字被留在行尾：' + line);
-  }
-  assert.ok(lines.some(l => l.includes('二十届五中全会')), '专名被拆开：' + JSON.stringify(lines));
-  assert.ok(lines.some(l => l.includes('60 个时间点')), '数字与量词被拆开：' + JSON.stringify(lines));
+  call('drawCard', ctx, parsedCard(), 400, 300, {});
+  const shown = ctx.texts.map(item => item.text);
+  assert.ok(shown.includes('章鱼 AI.每日研报'));
+  assert.ok(!shown.some(text => text.includes('上水日报')));
 });
 
-test('三种屏幕尺寸都不越界，字号不低于 10px', () => {
-  const card = call('buildCard', call('extractSummary', README_HTML));
-  const drawCard = get('drawCard');
+test('小屏候选是完整栏目内容，不依赖硬截断', () => {
+  const card = parsedCard();
+  for (const line of card.lines) {
+    assert.ok(Array.isArray(line.alts) && line.alts.length >= 1, line.label + ' 缺少候选');
+    assert.strictEqual(line.alts[0], line.text);
+    assert.ok(line.alts.every(Boolean));
+  }
+  const topics = card.lines[1];
+  assert.ok(topics.alts.length >= 4, '热点应能逐级缩到 1 条');
+  assert.ok(topics.alts.at(-1).includes('中东地缘'));
+  assert.ok(!topics.alts.at(-1).endsWith('…'));
+});
+
+test('无效 JSON、错误来源、缺栏目均会显式拒绝', () => {
+  assert.throws(() => call('parse007Report', '{bad'), /有效 JSON/);
+  assert.throws(() => call('parse007Report', {
+    source: { repository: 'other/repo' }, probability: { long: 50 },
+    topics: ['a'], risks: ['b'], opportunities: ['c'],
+  }), /来源不是/);
+  assert.throws(() => call('parse007Report', { source: {} }), /来源不是/);
+  const noProbability = JSON.parse(REPORT_TEXT);
+  noProbability.probability = { long: null, short: null };
+  assert.throws(() => call('parse007Report', noProbability), /缺少多空概率/);
+  const missing = JSON.parse(REPORT_TEXT);
+  missing.risks = [];
+  assert.throws(() => call('parse007Report', missing), /缺少风险点/);
+});
+
+test('只给一边概率时自动补齐；不一致时以多头为准归一', () => {
+  const base = {
+    source: { repository: 'k-macao/007' }, topics: ['热点'], risks: ['风险'], opportunities: ['机会'],
+  };
+  const one = call('parse007Report', { ...base, probability: { short: 61 } });
+  assert.strictEqual(one.probability.long, 39);
+  const badSum = call('parse007Report', { ...base, probability: { long: 72, short: 72 } });
+  assert.strictEqual(badSum.probability.short, 28);
+});
+
+test('三种屏幕尺寸都不越界，且四个栏目全部保留', () => {
+  const card = parsedCard();
   const opts = call('sumDisplayOptions');
   for (const [w, h] of [[400, 300], [296, 128], [250, 122]]) {
     const ctx = createStubContext(w, h);
-    const layout = drawCard(ctx, card, w, h, opts);
-    assert.ok(layout.bodySize >= 10, w + 'x' + h + ' 字号过小：' + layout.bodySize);
-    assert.ok(layout.blocks.length >= 1);
-    // 所有文字都必须落在画布内
-    for (const t of ctx.texts) {
-      assert.ok(t.y >= 0 && t.y < h, '文字纵向越界：' + JSON.stringify(t));
-      assert.ok(t.x >= 0 && t.x < w, '文字横向越界：' + JSON.stringify(t));
+    const layout = call('drawCard', ctx, card, w, h, opts);
+    assert.ok(layout.bodySize >= 10, `${w}x${h} 字号过小：${layout.bodySize}`);
+    assert.strictEqual(layout.blocks.length, 4, `${w}x${h} 应保留四栏目`);
+    layout.blocks.forEach((block, index) => {
+      assert.ok(card.lines[index].alts.includes(block.item.text),
+        `${w}x${h} 的${card.lines[index].label}不是完整候选：${block.item.text}`);
+      assert.ok(!block.item.text.includes('…'), `${w}x${h} 不应显示硬截断省略号`);
+    });
+    for (const item of ctx.texts) {
+      assert.ok(item.y >= 0 && item.y < h, '文字纵向越界：' + JSON.stringify(item));
+      assert.ok(item.x >= 0 && item.x < w, '文字横向越界：' + JSON.stringify(item));
+      assert.ok(item.x + measuredWidth(item.text, item.font) <= w + 0.5,
+        `文字横向越界：${item.text}`);
     }
   }
 });
 
-test('正文每一行都不超过可用宽度', () => {
-  const card = {
-    date: '2026-10-23',
-    lines: [
-      { label: '今日盘点', text: '整体偏多｜A股普涨强势｜政策偏暖｜北向资金净流入 120 亿' },
-      { label: '风险关注', text: '媒体舆情 结构化预警 12 只（红/橙 3） · 异常关注 7 只 · 最高 盈富基金 72/100' },
-      { label: 'AI 结论', text: '本次日报的配料表：24 路数据里 19 路是当天新鲜货，缺的 2 路直接点名、不装样子。' },
-    ],
-  };
-  const drawCard = get('drawCard');
-  const opts = call('sumDisplayOptions');
-  const w = 400, h = 300;
-  const ctx = createStubContext(w, h);
-  drawCard(ctx, card, w, h, opts);
-  for (const t of ctx.texts) {
-    const width = ctx.measureText(t.text).width;
-    assert.ok(t.x + width <= w + 0.5, '文字超出右边界：' + t.text + ' 右端 ' + (t.x + width));
-  }
+test('400×300 的四栏均使用某档完整候选，不把句子腰斩', () => {
+  const card = parsedCard();
+  const ctx = createStubContext(400, 300);
+  const layout = call('drawCard', ctx, card, 400, 300, {});
+  layout.blocks.forEach((block, index) => {
+    assert.ok(card.lines[index].alts.includes(block.item.text),
+      `${card.lines[index].label} 不是完整候选：${block.item.text}`);
+    assert.ok(!block.item.text.endsWith('…'));
+  });
 });
 
-test('折行不会把标点甩到行首，也不会拦腰切断英文', () => {
-  const wrapLines = get('wrapLines');
-  const ctx = createStubContext(200, 100);
+test('折行不把标点甩到行首，也不拆英文和百分比', () => {
+  const ctx = createStubContext(230, 120);
   ctx.font = '16px sans-serif';
-  const lines = wrapLines(ctx, '媒体舆情 结构化预警 5 只（红/橙 0），最高 盈富基金 40/100｜策略关键词 降级×1、加息×1', 200);
-  const NO_START = '，。、；：？！）】》」』…·,.;:!?)]}';
+  const lines = call('wrapLines', ctx,
+    'AI算力硬件产能锁定 · DeepSeek融资回报审视 · 多头概率62%与空头概率38%', 210);
+  const noStart = '，。、；：？！）】》」』…·,.;:!?)]}';
   for (const line of lines.slice(1)) {
-    assert.ok(NO_START.indexOf(line[0]) < 0, '标点出现在行首：' + line);
+    assert.ok(!noStart.includes(line[0]), '标点出现在行首：' + line);
   }
-  const en = wrapLines(ctx, '缺的 2 路（申万一级行业轮动策略、StockTwits）直接点名', 200);
-  assert.ok(en.some(l => l.includes('StockTwits')), 'StockTwits 被拆开：' + JSON.stringify(en));
+  assert.ok(lines.some(line => line.includes('DeepSeek')), JSON.stringify(lines));
+  assert.ok(lines.some(line => line.includes('62%') || line.includes('38%')), JSON.stringify(lines));
 });
 
 test('字号档位单调：小 ≤ 标准 ≤ 大', () => {
-  const card = call('buildCard', call('extractSummary', README_HTML));
-  const drawCard = get('drawCard');
+  const card = parsedCard();
   const base = call('sumDisplayOptions');
-  const sizeOf = offset => {
-    const ctx = createStubContext(400, 300);
-    return drawCard(ctx, card, 400, 300, Object.assign({}, base, { offset })).bodySize;
-  };
+  const sizeOf = offset => call('drawCard', createStubContext(400, 300), card, 400, 300,
+    Object.assign({}, base, { offset })).bodySize;
   const small = sizeOf(-1), normal = sizeOf(0), large = sizeOf(2);
-  assert.ok(small <= normal, '小档不应比标准档大：' + small + ' > ' + normal);
-  assert.ok(normal <= large, '标准档不应比大档大：' + normal + ' > ' + large);
+  assert.ok(small <= normal, `${small} > ${normal}`);
+  assert.ok(normal <= large, `${normal} > ${large}`);
 });
 
-test('1bpp 位平面：1=白 0=黑，红色层 0=红 1=非红，行尾补齐保持白', () => {
-  const canvasToLayers = get('canvasToLayers');
-  const w = 10, h = 2;                     // 10 不是 8 的倍数，右侧补 6 位
+test('1bpp 位平面：1=白 0=黑；红层与非 8 倍数行尾正确', () => {
+  const w = 10, h = 2;
   const data = new Uint8ClampedArray(w * h * 4).fill(255);
   const setPx = (x, y, r, g, b) => {
     const i = (y * w + x) * 4;
     data[i] = r; data[i + 1] = g; data[i + 2] = b; data[i + 3] = 255;
   };
-  setPx(0, 0, 0, 0, 0);        // 黑
-  setPx(7, 0, 0, 0, 0);        // 黑，字节最低位
-  setPx(8, 0, 0, 0, 0);        // 黑，第二字节首位
-  setPx(2, 1, 220, 30, 30);    // 红
+  setPx(0, 0, 0, 0, 0);
+  setPx(7, 0, 0, 0, 0);
+  setPx(8, 0, 0, 0, 0);
+  setPx(2, 1, 220, 30, 30);
+  const first = call('canvasToLayers', { getImageData: () => ({ data }) }, w, h);
+  assert.strictEqual(first.byteWidth, 2);
+  assert.strictEqual(first.bw[0], 0b01111110);
+  assert.strictEqual(first.bw[1], 0b01111111);
+  assert.strictEqual(first.bw[2], 0b11011111);
+  assert.strictEqual(first.red[2], 0b11011111);
 
-  const ctx = {
-    getImageData: () => ({ data }),
-  };
-  const { bw, red, byteWidth } = canvasToLayers(ctx, w, h);
-  assert.strictEqual(byteWidth, 2);
-  assert.strictEqual(bw.length, byteWidth * h);
-
-  // 第一行第一字节：bit7(0,0)、bit0(7,0) 为黑 → 0b0111_1110
-  assert.strictEqual(bw[0], 0b01111110);
-  // 第一行第二字节：bit7(8,0) 黑，其余补齐位必须为 1（白）
-  assert.strictEqual(bw[1], 0b01111111);
-  // 第二行第一字节：只有 x=2 是红点。红色在灰度上也算深色，
-  // 所以黑白层同样置黑，红色层该位单独清零（1 = 非红）
-  assert.strictEqual(bw[2], 0b11011111);
-  assert.strictEqual(red[2], 0b11011111);
-  // 不是红色的深色像素：红色层保持 1，不会被误判成红
   setPx(3, 1, 30, 30, 30);
-  const second = canvasToLayers({ getImageData: () => ({ data }) }, w, h);
+  const second = call('canvasToLayers', { getImageData: () => ({ data }) }, w, h);
   assert.strictEqual(second.bw[2], 0b11001111);
   assert.strictEqual(second.red[2], 0b11011111);
 });
 
 test('字体样张能画满且不越界', () => {
-  const drawFontSample = get('drawFontSample');
   const opts = call('sumDisplayOptions');
   for (const [w, h] of [[400, 300], [296, 128]]) {
     const ctx = createStubContext(w, h);
-    const info = drawFontSample(ctx, w, h, opts);
-    assert.ok(info.kept >= 2, '样张至少要有两行对比');
-    for (const t of ctx.texts) {
-      assert.ok(t.y >= 0 && t.y < h, '样张文字纵向越界：' + JSON.stringify(t));
-      assert.ok(t.x + ctx.measureText(t.text).width <= w + 0.5, '样张文字横向越界：' + t.text);
+    const info = call('drawFontSample', ctx, w, h, opts);
+    assert.ok(info.kept >= 2);
+    for (const item of ctx.texts) {
+      assert.ok(item.y >= 0 && item.y < h);
+      assert.ok(item.x + measuredWidth(item.text, item.font) <= w + 0.5,
+        '样张文字横向越界：' + item.text);
     }
   }
 });
 
-test('偏好记忆只接受下拉里存在的值', () => {
-  const { store } = loadModule();
-  store['epd.sum-font'] = 'not-a-font';
-  const saved = {};
-  Object.assign(saved, store);
-  // restore 逻辑：非法值应被忽略，控件保持原值
-  const box = loadModule();
-  box.store['epd.sum-font'] = 'mono';
-  vm.runInContext('restoreSumPrefs()', box.sandbox);
-  assert.strictEqual(box.makeElement('sum-font').value, 'mono');
+test('字体/字号偏好只恢复下拉中存在的值', () => {
+  const fresh = loadModule();
+  fresh.store['epd.sum-font'] = 'mono';
+  fresh.store['epd.sum-size-scale'] = 'large';
+  vm.runInContext('restoreSumPrefs()', fresh.sandbox);
+  assert.strictEqual(fresh.makeElement('sum-font').value, 'mono');
+  assert.strictEqual(fresh.makeElement('sum-size-scale').value, 'large');
+
+  fresh.store['epd.sum-font'] = 'not-a-font';
+  fresh.makeElement('sum-font').value = 'hei';
+  vm.runInContext('restoreSumPrefs()', fresh.sandbox);
+  assert.strictEqual(fresh.makeElement('sum-font').value, 'hei');
 });
 
-test('小屏放不下整句时，窗口摘要换成完整的短一档，而不是用省略号腰斩', () => {
-  const card = call('buildCard', call('extractSummary', README_HTML));
-  const win = card.lines[2];
-  assert.ok(Array.isArray(win.alts) && win.alts.length >= 3, '应给出逐级更短的候选');
-  assert.strictEqual(win.alts[0], win.text, '第一档就是完整版');
-
-  for (const [w, h] of [[296, 128], [250, 122]]) {
-    const ctx = createStubContext(w, h);
-    const layout = call('drawCard', ctx, card, w, h, {});
-    const shown = layout.blocks[2].item.text;
-    assert.ok(win.alts.includes(shown), '小屏应是某一档完整短句，实际：' + shown);
-    assert.ok(!/…$/.test(shown), '短句不应以省略号收尾：' + shown);
-    // 短句里的数字仍然全部来自日报原文
-    for (const num of shown.match(/\d+/g) || []) {
-      assert.ok(README_HTML.includes(num), '短句里的数字在原文中不存在：' + num);
-    }
-  }
+test('loadSummaryCard 只读取同源 data/007-report.json', async () => {
+  let requested = '';
+  const net = loadModule(async url => {
+    requested = String(url);
+    return { ok: true, text: async () => REPORT_TEXT };
+  });
+  const card = await vm.runInContext('loadSummaryCard()', net.sandbox);
+  assert.match(requested, /^data\/007-report\.json\?t=\d+$/);
+  assert.strictEqual(card.lines.length, 4);
 });
 
-test('没有「总结」栏目的旧日报：buildCard(null) 返回空卡片而不是抛错', () => {
+test('页面定时检查只在 007 报告 id 变化时自动重绘', async () => {
+  let current = JSON.parse(REPORT_TEXT);
+  const fresh = loadModule(async () => ({ ok: true, text: async () => JSON.stringify(current) }));
+  const first = await vm.runInContext('refreshSummaryIfChanged()', fresh.sandbox);
+  assert.strictEqual(first, true);
+  assert.strictEqual(vm.runInContext('sumCardCache.id', fresh.sandbox), current.id);
+
+  const unchanged = await vm.runInContext('refreshSummaryIfChanged()', fresh.sandbox);
+  assert.strictEqual(unchanged, false);
+
+  current = { ...current, id: current.id + '-next', time: '21:02' };
+  const changed = await vm.runInContext('refreshSummaryIfChanged()', fresh.sandbox);
+  assert.strictEqual(changed, true);
+  assert.strictEqual(vm.runInContext('sumCardCache.id', fresh.sandbox), current.id);
+});
+
+test('buildCard(null) 安全返回空卡，页头仍使用新标题', () => {
   const card = call('buildCard', null);
   assert.strictEqual(card.lines.length, 0);
   const ctx = createStubContext(400, 300);
   const layout = call('drawCard', ctx, card, 400, 300, {});
   assert.strictEqual(layout.blocks.length, 0);
-  // 页头 / 页脚照画
-  const texts = ctx.texts.map(t => t.text);
-  assert.ok(texts.includes('章鱼 AI · 上水日报'));
-  assert.ok(texts.some(t => t.includes('仅供参考')));
+  assert.ok(ctx.texts.some(item => item.text === '章鱼 AI.每日研报'));
+  assert.ok(ctx.texts.some(item => item.text.includes('仅供参考')));
 });
