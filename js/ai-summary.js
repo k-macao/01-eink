@@ -1,11 +1,14 @@
-// ---------- AI 总结：抓取日报 → 渲染成墨水屏位图 → 蓝牙推送 ----------
-// 与 main.js 的耦合刻意保持最小：
-//   - 只读取 addLog / epdCharacteristic / gattServer（旧版 main.js 也有）
-//   - 写入走本文件的 writeBytes()，main.js 有 writePayload 就用，没有就自己写
-//     这样即使浏览器缓存了旧版 main.js，推送功能也不会直接报 not defined
-//   - 指令码直接写常量（属于协议本身，不依赖 main.js 的 EpdCmd）
+// ---------- 章鱼 AI.每日研报：读取 007 → 四栏目 → 墨水屏位图 → 蓝牙推送 ----------
+//
+// 数据契约由 data/007-report.json 提供；GitHub Actions 每天澳门时间 09:10 / 17:10
+// 读取 k-macao/007 的采集器并更新它。页面只消费四类内容：
+//   AI 多空概率 / 热点话题 / 风险点 / 机会点。
+//
+// 与 main.js 的耦合刻意保持最小：旧缓存没有 writePayload 时仍可直接写 BLE 特征值。
 
-const SUMMARY_PATH = '001/output/latest.html';
+const SUMMARY_PATH = 'data/007-report.json';
+const REPORT_TITLE = '章鱼 AI.每日研报';
+const REPORT_REPOSITORY = 'k-macao/007';
 
 const SUM_CMD = {
   INIT:        0x01,
@@ -13,11 +16,7 @@ const SUM_CMD = {
   WRITE_IMAGE: 0x30,
 };
 
-/**
- * 统一写入入口。
- * main.js（新版）提供 writePayload(bytes, withResponse, silent)；
- * 若为旧缓存版本则没有该函数，这里退化成直接写特征值。
- */
+/** 统一写入入口；兼容浏览器缓存中的旧版 main.js。 */
 async function writeBytes(bytes, withResponse) {
   const data = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
 
@@ -47,425 +46,188 @@ function isDeviceConnected() {
   return gattServer.connected === true;
 }
 
-// MTU / RLE 由 main.js 在收到设备 notification 时写入
+// MTU / RLE 由 main.js 在收到设备 notification 时写入。
 const EpdLink = globalThis.EpdLink || (globalThis.EpdLink = { mtu: 240, rle: false, reported: false });
-
 let pushingSummary = false;
 
-// ---------- 解析 ----------
+// ---------- 007 JSON 解析与四栏目压缩 ----------
 
-function stripTags(s) {
-  return String(s).replace(/<[^>]*>/g, ' ');
-}
-
-function decodeEntities(s) {
-  return String(s)
-    .replace(/&#(\d+);/g, (_, d) => String.fromCharCode(parseInt(d, 10)))
-    .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCharCode(parseInt(h, 16)))
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'");
-}
-
-function normalizeText(s) {
-  return decodeEntities(stripTags(s)).replace(/\s+/g, ' ').trim();
-}
-
-/**
- * 从日报 HTML 中取出「总结」栏目的 标签 → 内容 映射。
- * 结构固定为 <h2>总结</h2> ... <tr><td>标签</td><td>内容</td></tr>
- */
-function extractSummary(html) {
-  const h2Re = /<h2[^>]*>([\s\S]*?)<\/h2>/g;
-  const heads = [];
-  let m;
-  while ((m = h2Re.exec(html)) !== null) {
-    heads.push({ index: m.index, end: m.index + m[0].length, text: normalizeText(m[1]) });
-  }
-
-  const idx = heads.findIndex(h => h.text.indexOf('总结') >= 0);
-  if (idx < 0) return null;
-
-  const start = heads[idx].end;
-  const end = idx + 1 < heads.length ? heads[idx + 1].index : html.length;
-  const section = html.slice(start, end);
-
-  const fields = {};
-  const trRe = /<tr[^>]*>([\s\S]*?)<\/tr>/g;
-  let tr;
-  while ((tr = trRe.exec(section)) !== null) {
-    const tds = [];
-    const tdRe = /<td[^>]*>([\s\S]*?)<\/td>/g;
-    let td;
-    while ((td = tdRe.exec(tr[1])) !== null) tds.push(normalizeText(td[1]));
-    if (tds.length < 2) continue;
-    const label = tds[0];
-    const value = tds[1];
-    if (!label || !value) continue;
-    // 跳过花体装饰行（█▓▒░ 等块字符 / emoji）与过长的伪标签
-    if (/[█▓▒░▀▄■□●]/.test(label)) continue;
-    if (/[\u{1F300}-\u{1FAFF}]/u.test(label)) continue;
-    if (label.length > 12) continue;
-    if (!(label in fields)) fields[label] = value;
-  }
-
-  if (Object.keys(fields).length === 0) return null;
-
-  // 报告日期
-  const dateMatch = /<meta[^>]*name=["']octopus-report-date["'][^>]*content=["'](\d{8})["']/i.exec(html);
-  let date = '';
-  if (dateMatch) {
-    const d = dateMatch[1];
-    date = d.slice(0, 4) + '-' + d.slice(4, 6) + '-' + d.slice(6, 8);
-  }
-
-  return { date, fields, window: extractWindowSummary(html) };
-}
-
-/** 取第一句（到句号/感叹号），最多 maxLen 字 */
-function firstSentence(text, maxLen) {
-  if (!text) return '';
-  const m = /^[^。！？!?]{1,200}[。！？!?]?/.exec(text);
-  let s = m ? m[0] : text;
-  if (s.length > maxLen) s = s.slice(0, maxLen - 1) + '…';
-  return s;
+function cleanReportText(value) {
+  return String(value == null ? '' : value)
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/[*_`#>]/g, '')
+    .replace(/^\s*(?:[-+•]|\d+[.)、])\s*/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function clampText(text, maxLen) {
-  if (!text) return '';
-  return text.length > maxLen ? text.slice(0, maxLen - 1) + '…' : text;
+  const value = cleanReportText(text);
+  return value.length > maxLen ? value.slice(0, maxLen - 1).replace(/[，、；：\s]+$/, '') + '…' : value;
 }
 
-/**
- * 「窗口摘要」的字段名（见 001/output/pipeline.py 的 _cal_digest）。
- * 精简版只有前 3 条，全量版还有中国/美国关键读数、最密集日、筛选口径。
- */
-const WINDOW_LABELS = [
-  '时间窗口', '时间点合计', '央行议息 / 重要会议', '央行议息/重要会议',
-  '中国关键读数', '美国关键读数', '最密集日', '筛选口径',
-];
-
-const squashLabel = s => String(s).replace(/\s+/g, '').replace(/／/g, '/');
-
-const WINDOW_LABEL_SET = new Set(WINDOW_LABELS.map(squashLabel));
-
-/**
- * 取出「时间节点量化分析」栏目里的「窗口摘要」表。
- *
- * 两个主题的结构不一样：研报版是一行两列（标签 / 内容），pixel 版是
- * 标签、内容各占一行。所以这里不按 <tr><td> 结构硬解，而是把标签和
- * 单元格边界都压成分隔符，再按「已知字段名 → 下一段」配对，两种版式通吃。
- *
- * 返回 [{ label, value }]（按原顺序）；老日报没有这张表时返回 null。
- */
-function extractWindowSummary(html) {
-  const head = /(^|>)\s*窗口摘要\s*</.exec(html);
-  if (!head) return null;
-
-  const at = head.index + head[0].length;
-  let end = html.indexOf('<!--SPLIT-->', at);
-  if (end < 0) end = Math.min(html.length, at + 12000);
-  const seg = html.slice(at, end);
-
-  // 单元格 / 行 / 区块边界统一换成 ，便于按段切
-  const flat = decodeEntities(
-    seg.replace(/<\/?(td|th|tr|div|table|tbody|p|br)\b[^>]*>/gi, '\u0001')
-       .replace(/<[^>]*>/g, ' ')
-  );
-  const tokens = flat.split('\u0001').map(t => t.replace(/\s+/g, ' ').trim()).filter(Boolean);
-
-  const pairs = [];
-  for (let i = 0; i < tokens.length; i++) {
-    if (!WINDOW_LABEL_SET.has(squashLabel(tokens[i]))) continue;
-    // 值 = 这一段之后、下一个「字段名」之前的第一段非空文本
-    let value = '';
-    for (let j = i + 1; j < tokens.length; j++) {
-      if (WINDOW_LABEL_SET.has(squashLabel(tokens[j]))) break;
-      if (tokens[j].trim()) { value = tokens[j].trim(); break; }
-    }
-    if (!value) continue;
-    pairs.push({ label: tokens[i].replace(/\s+/g, ' ').trim(), value });
-  }
-
-  return pairs.length ? pairs : null;
+function percent(value, fallback) {
+  if (value == null || String(value).trim() === '') return fallback;
+  const n = Number(value);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(0, Math.min(100, Math.round(n)));
 }
 
-/** 去掉日期前缀、把长名字压短：「中国共产党第二十届…第五次全体会议」→「五中全会」 */
-function compressEventName(text) {
-  let s = String(text || '').trim();
-  if (!s || s.indexOf('窗口内暂无') >= 0) return '';
-  s = s
-    .replace(/^\d{1,2}-\d{1,2}\s*/, '')
-    .replace(/中国共产党/g, '')
-    // 「二十届中央委员会第五次全体会议」→「五中全会」：屏上只留最认得出的部分
-    .replace(/第([一二三四五六七八九十\d]+)届中央委员会第([一二三四五六七八九十\d]+)次全体会议/g, '$2中全会')
-    .replace(/议息会议/g, '议息')
-    .replace(/全体会议/g, '全会')
-    // 经济读数常带一串口径：「GDP:不变价:环比折年率:季调」→「GDP」，
-    // 「ADP就业人数(万人)」→「ADP就业人数」
-    .replace(/[:：（(].*$/, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  // 截断时别把行尾留成半个括号 / 冒号
-  return s.length > 12 ? s.slice(0, 11).replace(/[\s([（:：,，、·]+$/, '') + '…' : s;
-}
-
-/** 「10-26 中国共产党第二十届中央委员会第五次全体会议」→「10-26 五中全会」 */
-function shortEventName(text) {
-  const md = /^(\d{1,2}-\d{1,2})/.exec(String(text || '').trim());
-  const name = compressEventName(text);
-  if (!name) return '';
-  return md ? md[1] + ' ' + name : name;
-}
-
-/**
- * 事件重要度打分：屏幕只放得下 1～2 个，要挑真正影响市场的。
- * 纯关键词加权，只用于「排序」，不改变原文事实。
- */
-function eventWeight(text) {
-  const t = String(text);
-  let w = 0;
-  if (/美联储/.test(t)) w += 5;
-  if (/中央委员会|中全会/.test(t)) w += 5;
-  if (/政治局|国务院/.test(t)) w += 4;
-  if (/央行|议息/.test(t)) w += 3;
-  if (/非农|CPI|PCE|GDP/.test(t)) w += 2;
-  if (/发布会|论坛|博览会|展/.test(t)) w -= 2;
-  return w;
-}
-
-/**
- * 把「窗口摘要」压成屏幕上读得完的一句话：
- * 窗口天数 · 时间点总数 · 最密集日 · 重点会议（前 2 个）。
- * 只做压缩，不加新数字——每个数字都来自日报原文。
- */
-function windowSegments(pairs) {
-  const f = {};
-  (pairs || []).forEach(p => { if (!(p.label in f)) f[p.label] = p.value; });
-
-  const seg = { span: '', total: '', star: '', dense: '', meets: [] };
-
-  // 时间窗口：2026-10-23 ~ 2026-11-22 · 未来 30 天 → 10-23~11-22 · 30 天
-  const span = f['时间窗口'] || '';
-  const sm = /(\d{4})-(\d{2})-(\d{2})\s*[~～]\s*(\d{4})-(\d{2})-(\d{2})/.exec(span);
-  const days = /未来\s*(\d+)\s*天/.exec(span);
-  if (sm) seg.span = sm[2] + '-' + sm[3] + '~' + sm[5] + '-' + sm[6] + (days ? ' · ' + days[1] + ' 天' : '');
-  else if (span) seg.span = clampText(span, 24);
-
-  // 时间点总数：60 个 · ★★★ 59 / ★★ 1
-  const total = f['时间点合计'] || '';
-  const tm = /^(\d+)\s*个/.exec(total);
-  const star = /★★★\s*(\d+)/.exec(total);
-  if (tm) {
-    seg.total = tm[1] + ' 个时间点';
-    if (star) seg.star = '★★★' + star[1];
-  }
-
-  // 最密集日：10-29 周四（8 项 · T+6）→ 最密 10-29（8 项）
-  const dense = f['最密集日'] || '';
-  const dm = /^(\d{1,2}-\d{1,2})[^（(]*[（(]\s*(\d+)\s*项/.exec(dense);
-  if (dm) seg.dense = '最密 ' + dm[1] + '（' + dm[2] + ' 项）';
-  else if (dense) seg.dense = '最密 ' + String(dense).split(/[（(]/)[0].trim();
-
-  // 重点会议：原文按日期排，「前 2 个」很可能是不重要的那两场；
-  // 这里按关键词挑重头戏，再按日期排回去。
-  const meet = f['央行议息 / 重要会议'] || f['央行议息/重要会议'] || '';
-  seg.meets = String(meet)
-    .replace(/等\s*\d+\s*项\s*$/, '')
-    .split('、')
-    .map(t => t.trim())
-    .filter(Boolean)
-    .map((raw, i) => ({ i, score: eventWeight(raw), name: shortEventName(raw) }))
-    .filter(x => x.name)
-    .sort((a, b) => (b.score - a.score) || (a.i - b.i))
-    .slice(0, 2)
-    .sort((a, b) => a.i - b.i)
-    .map(x => x.name);
-
-  return seg;
-}
-
-/** 带日期的三类条目：会议 / 中国读数 / 美国读数 */
-const DATED_WINDOW_LABELS = [
-  '央行议息 / 重要会议', '央行议息/重要会议', '中国关键读数', '美国关键读数',
-];
-
-/** 把条目串拆开：「10-26 五中全会、10-28 美联储议息 等 9 项」→ [{md,name,score}] */
-function windowDatedItems(pairs) {
-  const out = [];
-  (pairs || []).forEach(p => {
-    if (DATED_WINDOW_LABELS.indexOf(p.label) < 0) return;
-    String(p.value || '')
-      .replace(/等\s*\d+\s*项\s*$/, '')
-      .split(/[、，]/)
-      .forEach(raw => {
-        const t = raw.trim();
-        const md = /^(\d{1,2}-\d{1,2})(?!\d)/.exec(t);
-        const name = compressEventName(t);
-        if (!md || !name) return;
-        out.push({ md: md[1], name, score: eventWeight(t) });
-      });
-  });
-  return out;
-}
-
-/** 「2026-10-23」之后 5 个工作日（跳过周末）；日期不合法返回 null */
-function nextFiveWeekdays(dateISO) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(dateISO || ''));
-  if (!m) return null;
-  const p2 = v => String(v).padStart(2, '0');
-  const out = [];
-  for (let i = 1; i <= 30 && out.length < 5; i++) {
-    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]) + i * 86400000);
-    const dow = d.getUTCDay();
-    if (dow === 0 || dow === 6) continue;
-    out.push(p2(d.getUTCMonth() + 1) + '-' + p2(d.getUTCDate()));
-  }
-  return out.length === 5 ? out : null;
-}
-
-/**
- * 「只显示未来五天」的那一版窗口摘要。
- *
- * 日报的窗口摘要表按 30 天铺开，屏上只读得完最近这周。这里把会议 / 中美国关键读数
- * 里带 MM-DD 的条目按「报告日之后的 5 个工作日」筛一遍，一天只留最重要的一条，
- * 日期都来自日报原文，不自己推算节假日。
- *
- * 卡上只出现内容本身（`10-26 五中全会 · 10-28 美联储议息`），
- * 不加「10-26~10-30」这类区间说明——那是元信息，屏上每多一个字都挤掉正事。
- *
- * 五天内一条都没有（淡季）时返回 []，由调用方退回 30 天口径。
- */
-function composeFiveDayVariants(pairs, dateISO) {
-  const days = nextFiveWeekdays(dateISO);
-  if (!days) return [];
-  const keep = new Set(days);
-
-  const picked = [];
-  const at = {};
-  windowDatedItems(pairs).forEach(it => {
-    if (!keep.has(it.md)) return;
-    if (!(it.md in at)) { at[it.md] = picked.length; picked.push(it); return; }
-    if (it.score > picked[at[it.md]].score) picked[at[it.md]] = it;   // 一天只留一条
-  });
-  if (!picked.length) return [];
-
-  picked.sort((a, b) => days.indexOf(a.md) - days.indexOf(b.md));
-
-  // 日报里同一个读数会连着几天重复列（09-30 CPI / 10-01 CPI / 10-02 CPI），
-  // 屏上重复三遍没有信息量，只留最早那天
+function reportList(value, maxItems, mapper) {
+  if (!Array.isArray(value)) return [];
   const seen = new Set();
-  const uniq = [];
-  picked.forEach(it => {
-    if (seen.has(it.name)) return;
-    seen.add(it.name);
-    uniq.push(it);
+  const out = [];
+  value.slice(0, maxItems * 2).forEach((raw, index) => {
+    const item = mapper(raw, index);
+    if (!item || !item.text) return;
+    const key = cleanReportText(item.text);
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    item.text = key;
+    out.push(item);
   });
+  return out.slice(0, maxItems);
+}
 
-  let show = uniq;
-  if (show.length > 4) {
-    // 屏上最多排 4 条：五天都有事时按重要度留 4 天，再排回日期顺序
-    const keepIdx = show.map((it, i) => ({ score: it.score, i }))
-      .sort((a, b) => (b.score - a.score) || (a.i - b.i))
-      .slice(0, 4)
-      .map(x => x.i)
-      .sort((a, b) => a - b);
-    show = keepIdx.map(i => show[i]);
+/**
+ * Validate the generated same-origin JSON before it reaches the renderer.
+ * A malformed scheduled update therefore produces a visible error instead of
+ * silently putting made-up zeroes or empty sections on the physical display.
+ */
+function parse007Report(payload) {
+  let raw = payload;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); }
+    catch (_) { throw new Error('007 研报不是有效 JSON'); }
+  }
+  if (!raw || typeof raw !== 'object') throw new Error('007 研报数据为空');
+
+  const src = raw.source || {};
+  if (src.repository !== REPORT_REPOSITORY) {
+    throw new Error('研报来源不是 ' + REPORT_REPOSITORY);
   }
 
-  // 卡上只放「日期 + 事情」本身：区间（10-26~10-30）是说明，不是内容，不占行宽
-  const label = it => it.md + ' ' + it.name;
+  const p = raw.probability || {};
+  let longP = percent(p.long, null);
+  let shortP = percent(p.short, null);
+  if (longP == null && shortP == null) throw new Error('007 研报缺少多空概率');
+  if (longP == null) longP = 100 - shortP;
+  if (shortP == null || Math.abs(longP + shortP - 100) > 1) shortP = 100 - longP;
+
+  const topics = reportList(raw.topics, 6, (item) => {
+    if (typeof item === 'string') return { text: item, sentiment: '', weight: null };
+    if (!item || typeof item !== 'object') return null;
+    const weight = Number(item.weight);
+    return {
+      text: item.text,
+      sentiment: cleanReportText(item.sentiment),
+      weight: Number.isFinite(weight) ? Math.max(0, Math.min(100, weight)) : null,
+    };
+  });
+  const risks = reportList(raw.risks, 5, item => ({ text: typeof item === 'string' ? item : item && item.text }));
+  const opportunities = reportList(raw.opportunities, 5, item => ({ text: typeof item === 'string' ? item : item && item.text }));
+
+  if (!topics.length) throw new Error('007 研报缺少热点话题');
+  if (!risks.length) throw new Error('007 研报缺少风险点');
+  if (!opportunities.length) throw new Error('007 研报缺少机会点');
+
+  return {
+    id: cleanReportText(raw.id),
+    title: cleanReportText(raw.title) || REPORT_TITLE,
+    date: cleanReportText(raw.date),
+    time: cleanReportText(raw.time),
+    edition: cleanReportText(raw.edition),
+    generatedAt: cleanReportText(raw.generated_at),
+    sampleCount: Math.max(0, parseInt(raw.sample_count, 10) || 0),
+    sourceCount: Math.max(0, parseInt(raw.source_count, 10) || 0),
+    probability: {
+      long: longP,
+      short: shortP,
+      label: cleanReportText(p.label),
+      note: cleanReportText(p.note),
+    },
+    topics,
+    risks,
+    opportunities,
+    source: src,
+    disclaimer: cleanReportText(raw.disclaimer),
+  };
+}
+
+function uniqueVariants(values) {
   const out = [];
-  [
-    show.map(label),
-    show.slice(0, 3).map(label),
-    show.slice(0, 2).map(label),
-    show.slice(0, 1).map(label),
-  ].forEach(list => {
-    const text = list.filter(Boolean).join(' · ');
+  values.forEach(value => {
+    const text = cleanReportText(value);
     if (text && out.indexOf(text) < 0) out.push(text);
   });
   return out;
 }
 
 /**
- * 按「信息量从多到少」列出窗口摘要的几档文案。
- * 小屏（296×128 / 250×122）正文只有一行位置，排版层会退到能放下的那一档，
- * 而不是把句子腰斩——所以这里给的是整句候选，不是字符串前缀。
+ * A punctuation-bounded short form is still a complete thought (for example,
+ * 「锂电与电池产业链：排产回暖」→「锂电与电池产业链」).  This gives the
+ * narrow screens a real alternative instead of manufacturing an ellipsis.
  */
-function composeWindowVariants(pairs) {
-  const g = windowSegments(pairs);
-  const pick = keys => keys.map(k => g[k]).filter(Boolean);
-
-  const full = pick(['span', 'total', 'star', 'dense']).concat(g.meets);
-  const mid = pick(['span', 'total', 'dense']).concat(g.meets.slice(0, 1));
-  // 再短一档：丢掉时间窗口，但保住「最密集日 + 重头戏」——这两项才是要看日历的理由
-  const brief = pick(['dense']).concat(g.meets);
-  const short = pick(['total', 'dense']);
-  const tiny = pick(['dense']);
-
-  const out = [];
-  [full, mid, brief, short, tiny].forEach(list => {
-    const text = list.join(' · ');
-    if (text && out.indexOf(text) < 0) out.push(text);
-  });
-  return out;
+function completeClause(value) {
+  const text = cleanReportText(value);
+  const cut = text.search(/[：:，,；;。！？!?]/);
+  if (cut >= 4) return text.slice(0, cut).trim().replace(/若(?=持续|继续|出现|发生|未|不)/, '');
+  return text;
 }
 
-/** 单档文案（日志 / 测试用） */
-function composeWindowSummary(pairs) {
-  const v = composeWindowVariants(pairs);
-  return v.length ? v[0] : '';
+/** Build progressively shorter, punctuation-complete alternatives for small screens. */
+function itemVariants(items, formatter, separator) {
+  const sep = separator || ' · ';
+  const full = items.map(formatter).map(cleanReportText).filter(Boolean);
+  const plain = items.map(item => cleanReportText(item.text)).filter(Boolean);
+  const clauses = plain.map(completeClause);
+  return uniqueVariants([
+    full.join(sep),
+    plain.join(sep),
+    plain.slice(0, 4).join(sep),
+    plain.slice(0, 3).join(sep),
+    plain.slice(0, 2).join(sep),
+    clauses.join(sep),
+    clauses.slice(0, 4).join(sep),
+    clauses.slice(0, 3).join(sep),
+    clauses.slice(0, 2).join(sep),
+    plain.slice(0, 1).join(sep),
+    clauses.slice(0, 1).join(sep),
+  ]);
+}
+
+function formatTopic(item) {
+  let suffix = item.sentiment || '';
+  if (item.weight != null) suffix += (suffix ? '·' : '') + '权重' + Number(item.weight).toFixed(1).replace(/\.0$/, '') + '%';
+  return cleanReportText(item.text) + (suffix ? '〔' + suffix + '〕' : '');
 }
 
 /**
- * 把「总结」字段整理成屏幕卡片上要显示的若干行。
- * 屏幕很小，只保留 3 条最有信息量的内容：
- * 今日盘点 / 明日关注 / 窗口摘要（时间节点栏目的全窗口口径）。
+ * Convert the 007 contract to exactly the four requested display columns.
+ * Every line carries whole-sentence alternatives; the layout engine can move
+ * to a shorter version without cutting a headline/risk in half.
  */
-function buildCard(summary) {
-  // extractSummary 对「总结」格式之前的旧日报会返回 null —— 给一张空卡片，
-  // 让上层照常画页头页脚，而不是抛 TypeError
-  if (!summary) return { date: '', lines: [] };
+function buildCard(report) {
+  if (!report) return { id: '', date: '', section: '007', lines: [] };
+  const r = report.probability;
+  const prob = '多 ' + r.long + '% · 空 ' + r.short + '%' + (r.label ? ' · ' + r.label : '');
+  const probShort = '多' + r.long + '% · 空' + r.short + '%';
+  const topicVariants = itemVariants(report.topics, formatTopic);
+  const riskVariants = itemVariants(report.risks, item => cleanReportText(item.text));
+  const opportunityVariants = itemVariants(report.opportunities, item => cleanReportText(item.text));
 
-  const f = summary.fields || {};
-  const lines = [];
-
-  if (f['今日盘点']) lines.push({ label: '今日盘点', text: clampText(f['今日盘点'], 60) });
-  if (f['明日关注']) lines.push({ label: '明日关注', text: clampText(f['明日关注'], 60) });
-
-  // 窗口摘要取代原来的「风险关注」「AI 结论」：那两条又长又常被截，
-  // 屏上读不完；窗口摘要只报未来五天，一周的日程刚好读得完。
-  if (summary.window && summary.window.length) {
-    // 只报「未来五天」：屏上读得完的也就这一周，30 天口径留给淡季兜底。
-    // 每档都是整句候选：小屏（296×128 / 250×122）只有一行位置，
-    // 就让排版层自动退到能放下的那一档，而不是把句子腰斩
-    const five = composeFiveDayVariants(summary.window, summary.date);
-    const variants = five.length ? five : composeWindowVariants(summary.window);
-    if (variants.length) {
-      lines.push({
-        label: '窗口摘要',
-        text: clampText(variants[0], 130),
-        alts: variants.map(t => clampText(t, 130)),
-      });
-    }
-  } else if (f['风险关注'] || f['本栏结论']) {
-    // 老日报没有「窗口摘要」表时，退回原来的两条
-    if (f['风险关注']) lines.push({ label: '风险关注', text: clampText(f['风险关注'], 78) });
-    if (f['本栏结论']) lines.push({ label: 'AI 结论', text: firstSentence(f['本栏结论'], 96) });
-  }
-
-  // 兜底：字段命名有变化时，取任意前两条非空内容
-  if (lines.length === 0) {
-    Object.keys(f).slice(0, 2).forEach(k => {
-      lines.push({ label: clampText(k, 10), text: clampText(f[k], 80) });
-    });
-  }
-
-  return { date: summary.date, lines: lines };
+  const stamp = [report.date, report.time, report.edition].filter(Boolean).join(' ');
+  return {
+    id: report.id || report.generatedAt || stamp,
+    date: stamp,
+    section: '007' + (report.edition ? ' · ' + report.edition : ''),
+    lines: [
+      { label: 'AI 多空概率', text: prob, alts: uniqueVariants([prob, probShort]) },
+      { label: '热点话题', text: topicVariants[0], alts: topicVariants },
+      { label: '风险点', text: riskVariants[0], alts: riskVariants },
+      { label: '机会点', text: opportunityVariants[0], alts: opportunityVariants },
+    ],
+  };
 }
 
 // ---------- 渲染 ----------
@@ -931,14 +693,14 @@ function drawCard(ctx, card, w, h, opts) {
     };
   }
 
-  // 标题
+  // 标题（按用户指定标点原样显示）
   ctx.font = cardFont(titleSize, opts, boldAt(titleSize));
-  ctx.fillText('章鱼 AI · 上水日报', pad, pad);
+  ctx.fillText(REPORT_TITLE, pad, pad);
 
-  // 日期 / 栏目名
+  // 日期 / 007 版次
   ctx.font = cardFont(headSize, opts, false);
   ctx.fillText(card.date || '', pad, headTop);
-  const sectionText = '总结';
+  const sectionText = card.section || '007';
   ctx.fillText(sectionText, w - pad - ctx.measureText(sectionText).width, headTop);
 
   // 分隔线（2px 起步：1px 在部分墨水屏上会整条消失）
@@ -1086,17 +848,17 @@ function describeLayout(layout, opts) {
 
 async function loadSummaryCard() {
   const resp = await fetch(SUMMARY_PATH + '?t=' + Date.now(), { cache: 'no-store' });
-  if (!resp.ok) throw new Error('读取日报失败 HTTP ' + resp.status);
-  const html = await resp.text();
-  const summary = extractSummary(html);
-  if (!summary) throw new Error('未在日报中找到「总结」栏目');
-  return buildCard(summary);
+  if (!resp.ok) throw new Error('读取仓库007研报失败 HTTP ' + resp.status);
+  const payload = await resp.text();
+  return buildCard(parse007Report(payload));
 }
 
-// 缓存最近一次抓到的卡片：切字号 / 字体 / 预览倍数时直接重绘，不用每次都拉日报
+// 缓存最近一次 007 卡片：切字号 / 字体 / 预览倍数时直接重绘，不重复取数
 const SUM_CACHE_MS = 5 * 60 * 1000;
+const SUM_PAGE_REFRESH_MS = 2 * 60 * 1000;
 let sumCardCache = null;
 let sumCardFetchedAt = 0;
+let sumRefreshTimerId = null;
 
 async function getSummaryCard(force) {
   const fresh = sumCardCache && (Date.now() - sumCardFetchedAt) < SUM_CACHE_MS;
@@ -1107,23 +869,47 @@ async function getSummaryCard(force) {
   return card;
 }
 
-/** 只拉取并预览，不下发蓝牙。force=true 时忽略缓存重新抓日报 */
+/** 只拉取并预览，不下发蓝牙。force=true 时忽略缓存重新读取 007 */
 async function previewSummary(force) {
   const canvas = document.getElementById('sum-preview');
-  if (!sumCardCache) sumStatus('正在读取最新日报...');
+  if (!sumCardCache) sumStatus('正在读取仓库007最新研报...');
   try {
     const card = await getSummaryCard(force === true);
     const { layout, opts } = renderSummaryToCanvas(canvas, card);
     canvas.style.display = 'block';
     applySumZoom(canvas);
     sumStatus('已生成预览（' + (card.date || '日期未知') + '）· ' + describeLayout(layout, opts));
-    if (typeof addLog === 'function') addLog('AI 总结预览已生成：' + describeLayout(layout, opts));
+    if (typeof addLog === 'function') addLog('每日研报预览已生成：' + describeLayout(layout, opts));
     return card;
   } catch (e) {
     sumStatus('预览失败：' + e.message);
-    if (typeof addLog === 'function') addLog('AI 总结预览失败：' + e.message);
+    if (typeof addLog === 'function') addLog('每日研报预览失败：' + e.message);
     return null;
   }
+}
+
+/** 页面保持打开时，每两分钟检查一次；只有 007 报告 id 变化才重绘。 */
+async function refreshSummaryIfChanged() {
+  const previousId = sumCardCache && sumCardCache.id;
+  try {
+    const card = await getSummaryCard(true);
+    if (previousId && card.id === previousId) return false;
+    const canvas = document.getElementById('sum-preview');
+    const { layout, opts } = renderSummaryToCanvas(canvas, card);
+    canvas.style.display = 'block';
+    applySumZoom(canvas);
+    sumStatus('007 已更新（' + (card.date || '日期未知') + '）· ' + describeLayout(layout, opts));
+    if (previousId && typeof addLog === 'function') addLog('检测到 007 新版次，页面预览已自动更新');
+    return true;
+  } catch (_) {
+    // 定时检查失败不覆盖屏上最后一份有效研报；手动刷新会显示完整错误。
+    return false;
+  }
+}
+
+function startSummaryRefreshChecker() {
+  if (sumRefreshTimerId != null || typeof setInterval !== 'function') return;
+  sumRefreshTimerId = setInterval(refreshSummaryIfChanged, SUM_PAGE_REFRESH_MS);
 }
 
 async function sendImageLayer(data, isBw, onProgress) {
@@ -1190,21 +976,23 @@ async function pushCanvas(canvas, tag) {
 
 /** 统一处理「未连接 / 重复点击 / 按钮禁用 / 报错」的推送外壳 */
 async function withPushGuard(btnId, tag, worker) {
-  if (pushingSummary) return;
+  if (pushingSummary) return false;
   if (!isDeviceConnected()) {
     sumStatus('请先连接设备');
     if (typeof addLog === 'function') addLog(tag + '：设备未连接');
-    return;
+    return false;
   }
   const btn = document.getElementById(btnId);
   pushingSummary = true;
   if (btn) btn.disabled = 'disabled';
   try {
     await worker();
+    return true;
   } catch (e) {
     console.error(e);
     sumStatus('推送失败：' + e.message);
     if (typeof addLog === 'function') addLog(tag + '推送失败：' + e.message);
+    return false;
   } finally {
     pushingSummary = false;
     if (btn) btn.disabled = null;
@@ -1212,8 +1000,8 @@ async function withPushGuard(btnId, tag, worker) {
 }
 
 async function pushLatestSummary() {
-  return withPushGuard('btn-push-summary', 'AI 总结', async () => {
-    sumStatus('正在读取最新日报...');
+  return withPushGuard('btn-push-summary', '每日研报', async () => {
+    sumStatus('正在读取仓库007最新研报...');
     const card = await getSummaryCard(true);
 
     const canvas = document.getElementById('sum-preview');
@@ -1221,10 +1009,10 @@ async function pushLatestSummary() {
     canvas.style.display = 'block';
     applySumZoom(canvas);
 
-    addLog('AI 总结：' + (card.date || '') + '，' + size.w + '×' + size.h + '，' +
+    addLog('每日研报：' + (card.date || '') + '，' + size.w + '×' + size.h + '，' +
       describeLayout(layout, opts) + '，块大小 ' + EpdLink.mtu + 'B' + (EpdLink.rle ? '（RLE 固件）' : ''));
 
-    await pushCanvas(canvas, 'AI 总结');
+    await pushCanvas(canvas, '每日研报');
     sumStatus('已推送（' + (card.date || '') + '），屏幕刷新中');
   });
 }
@@ -1347,6 +1135,7 @@ if (typeof document !== 'undefined') {
   const ready = () => {
     bindSumPrefs();
     previewSummary();
+    startSummaryRefreshChecker();
   };
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(ready, 0);

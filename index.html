@@ -1,15 +1,15 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>eMemoLog</title>
-	<link rel="stylesheet" href="css/main.css?v=20261025a">
+    <title>章鱼 AI.每日研报</title>
+	<link rel="stylesheet" href="css/main.css?v=20261024-007a">
 </head>
 
 <body>
     <div class="main">
-        <h3>墨水屏日历</h3>
+        <h3>章鱼 AI.每日研报</h3>
         <fieldset>
             <legend>蓝牙连接</legend>
             <div class="flex-container">
@@ -32,7 +32,7 @@
             </div>
         </fieldset>
         <fieldset>
-            <legend>AI 总结推送</legend>
+            <legend>仓库 007 · 每日研报推送</legend>
             <div class="flex-container">
                 <div class="flex-group">
                     <label for="sum-size">屏幕尺寸</label>
@@ -66,32 +66,35 @@
             </div>
             <div class="flex-container">
                 <div class="flex-group">
-                    <button type="button" class="secondary" onclick="previewSummary(true)">重新抓取并预览</button>
-                    <button id="btn-push-summary" type="button" class="primary" onclick="pushLatestSummary()">推送最新AI总结</button>
+                    <button type="button" class="secondary" onclick="previewSummary(true)">重新读取 007 并预览</button>
+                    <button id="btn-push-summary" type="button" class="primary" onclick="pushLatestSummary()">推送最新每日研报</button>
                     <button id="btn-push-sample" type="button" class="secondary" onclick="pushFontSample()">推送字体样张</button>
                 </div>
             </div>
-            <div class="sum-hint">字体不清楚时，先「推送字体样张」到设备上比对，再回来选字号 / 字体。</div>
+            <div class="sum-hint">每天澳门时间 09:10 / 17:10 读取仓库 007；屏上只显示「AI 多空概率、热点话题、风险点、机会点」。字体不清楚时可先推送字体样张。</div>
             <canvas id="sum-preview"
                 style="display:none;width:100%;max-width:420px;margin-top:10px;border:1px solid #E4E4E7;image-rendering:pixelated;"></canvas>
             <div id="sum-status" style="margin-top:8px;font-size:0.9rem;color:#666;">尚未生成预览</div>
         </fieldset>
         <fieldset>
-            <legend>每天自动蓝牙更新</legend>
+            <legend>每天两次自动显示</legend>
             <div class="flex-container">
                 <div class="flex-group">
-                    <label for="chk-auto-update">启用自动更新</label>
+                    <label for="chk-auto-update">启用自动推送</label>
                     <input type="checkbox" id="chk-auto-update" onchange="toggleAutoUpdate()">
-                    <label for="time-auto-update">每日执行时间</label>
-                    <input type="time" id="time-auto-update" value="08:00" onchange="setAutoUpdateTime()">
-                    <button type="button" class="secondary" onclick="testAutoUpdate()">立即测试</button>
+                    <label for="time-auto-update-am">早报</label>
+                    <input type="time" id="time-auto-update-am" value="09:15" onchange="setAutoUpdateTimes()">
+                    <label for="time-auto-update-pm">晚报</label>
+                    <input type="time" id="time-auto-update-pm" value="17:15" onchange="setAutoUpdateTimes()">
+                    <button type="button" class="secondary" onclick="testAutoUpdate()">立即测试研报推送</button>
                 </div>
             </div>
-            <div id="auto-status" style="margin-top:8px; font-size:0.9rem; color:#666;">自动更新：已停止</div>
+            <div class="sum-hint">页面需保持打开；先手动选择设备一次，早晚两次会自动重连、同步时间并推送最新研报。</div>
+            <div id="auto-status" style="margin-top:8px; font-size:0.9rem; color:#666;">自动推送：已停止</div>
         </fieldset>
     </div>
-    <script type="text/javascript" src="js/main.js?v=20261025a"></script>
-    <script type="text/javascript" src="js/ai-summary.js?v=20261025a"></script>
+    <script type="text/javascript" src="js/main.js?v=20261024-007a"></script>
+    <script type="text/javascript" src="js/ai-summary.js?v=20261024-007a"></script>
 </body>
 
 </html>

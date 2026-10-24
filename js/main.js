@@ -328,45 +328,93 @@ function clearLog() {
   document.getElementById("log").innerHTML = '';
 }
 
-// ---------- 每天自动蓝牙更新 ----------
+// ---------- 每天两次自动显示 007 每日研报 ----------
 let autoUpdateEnabled = false;
-let autoUpdateTime = "08:00"; // HH:MM
+let autoUpdateTimes = ["09:15", "17:15"]; // 澳门/浏览器本地时间，HH:MM
 let autoCheckTimerId = null;
-let lastAutoUpdateDate = ""; // YYYY-MM-DD，防止同天重复触发
+let autoUpdateRunning = false;
+let lastAutoUpdateSlot = ""; // YYYY-MM-DD@HH:MM，防止同一档重复触发
 
-function toggleAutoUpdate() {
-  const chk = document.getElementById("chk-auto-update");
-  autoUpdateEnabled = chk.checked;
-  const status = document.getElementById("auto-status");
-  if (autoUpdateEnabled) {
-    status.textContent = "自动更新：已启用（每日 " + autoUpdateTime + "）";
-    startAutoUpdateChecker();
-    addLog("自动更新已启用，每日 " + autoUpdateTime + " 执行");
-  } else {
-    status.textContent = "自动更新：已停止";
-    stopAutoUpdateChecker();
-    addLog("自动更新已停止");
+const AUTO_PREF = {
+  enabled: 'epd.auto.enabled',
+  morning: 'epd.auto.morning',
+  evening: 'epd.auto.evening',
+  lastSlot: 'epd.auto.lastSlot',
+};
+
+function validClock(value, fallback) {
+  return /^([01]\d|2[0-3]):[0-5]\d$/.test(String(value || '')) ? String(value) : fallback;
+}
+
+function saveAutoPrefs() {
+  try {
+    localStorage.setItem(AUTO_PREF.enabled, autoUpdateEnabled ? '1' : '0');
+    localStorage.setItem(AUTO_PREF.morning, autoUpdateTimes[0]);
+    localStorage.setItem(AUTO_PREF.evening, autoUpdateTimes[1]);
+    if (lastAutoUpdateSlot) localStorage.setItem(AUTO_PREF.lastSlot, lastAutoUpdateSlot);
+  } catch (_) { /* 隐私模式可能禁用 localStorage，当前页面内仍可使用 */ }
+}
+
+function loadAutoPrefs() {
+  try {
+    autoUpdateEnabled = localStorage.getItem(AUTO_PREF.enabled) === '1';
+    autoUpdateTimes = [
+      validClock(localStorage.getItem(AUTO_PREF.morning), '09:15'),
+      validClock(localStorage.getItem(AUTO_PREF.evening), '17:15'),
+    ];
+    lastAutoUpdateSlot = localStorage.getItem(AUTO_PREF.lastSlot) || '';
+  } catch (_) {
+    autoUpdateEnabled = false;
+    autoUpdateTimes = ['09:15', '17:15'];
   }
 }
 
-function setAutoUpdateTime() {
-  const inp = document.getElementById("time-auto-update");
-  autoUpdateTime = inp.value;
-  const status = document.getElementById("auto-status");
-  status.textContent = "自动更新：" + (autoUpdateEnabled ? "已启用（每日 " + autoUpdateTime + "）" : "已停止");
-  addLog("自动更新时间已设为 " + autoUpdateTime);
+function autoStatusText(extra) {
+  if (extra) return '自动推送：' + extra;
+  if (!autoUpdateEnabled) return '自动推送：已停止';
+  return '自动推送：已启用（每日 ' + autoUpdateTimes.join(' / ') + '）';
+}
+
+function showAutoStatus(extra) {
+  const status = document.getElementById('auto-status');
+  if (status) status.textContent = autoStatusText(extra);
+}
+
+function toggleAutoUpdate() {
+  const chk = document.getElementById('chk-auto-update');
+  autoUpdateEnabled = !!(chk && chk.checked);
+  saveAutoPrefs();
   if (autoUpdateEnabled) {
     startAutoUpdateChecker();
+    addLog('每日研报自动推送已启用：' + autoUpdateTimes.join(' / '));
+  } else {
+    stopAutoUpdateChecker();
+    addLog('每日研报自动推送已停止');
   }
+  showAutoStatus();
+}
+
+function setAutoUpdateTimes() {
+  const am = document.getElementById('time-auto-update-am');
+  const pm = document.getElementById('time-auto-update-pm');
+  const first = validClock(am && am.value, autoUpdateTimes[0]);
+  const second = validClock(pm && pm.value, autoUpdateTimes[1]);
+  autoUpdateTimes = [first, second];
+  saveAutoPrefs();
+  showAutoStatus();
+  addLog('每日研报推送时间已设为 ' + autoUpdateTimes.join(' / '));
+  if (autoUpdateEnabled) startAutoUpdateChecker();
+}
+
+// 兼容旧页面仍可能缓存的 onchange="setAutoUpdateTime()"。
+function setAutoUpdateTime() {
+  setAutoUpdateTimes();
 }
 
 function startAutoUpdateChecker() {
   stopAutoUpdateChecker();
-  // 每分钟检查一次是否到达设定时间
-  autoCheckTimerId = setInterval(() => {
-    checkAutoUpdate();
-  }, 60 * 1000);
-  // 立即检查一次（页面刚打开可能正好在设定时间附近）
+  // 30 秒检查一次；允许到点后 10 分钟内补触发，避免后台标签页定时器被浏览器节流而漏掉。
+  autoCheckTimerId = setInterval(() => checkAutoUpdate(), 30 * 1000);
   checkAutoUpdate();
 }
 
@@ -377,69 +425,101 @@ function stopAutoUpdateChecker() {
   }
 }
 
-function checkAutoUpdate() {
-  if (!autoUpdateEnabled) return;
-  const now = new Date();
-  const hh = String(now.getHours()).padStart(2, "0");
-  const mm = String(now.getMinutes()).padStart(2, "0");
-  const curTime = hh + ":" + mm;
-  const curDate = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-" + String(now.getDate()).padStart(2, "0");
-
-  // 只在设定时间整点触发，且同一天只执行一次
-  if (curTime === autoUpdateTime && curDate !== lastAutoUpdateDate) {
-    lastAutoUpdateDate = curDate;
-    addLog("到达每日自动更新时间 " + autoUpdateTime + "，开始自动蓝牙更新...");
-    runAutoUpdate();
-  }
+function localDateKey(now) {
+  return now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0') + '-' +
+    String(now.getDate()).padStart(2, '0');
 }
 
-async function runAutoUpdate() {
-  const status = document.getElementById("auto-status");
-  status.textContent = "自动更新：正在更新...";
+function dueAutoSlot(now) {
+  const date = localDateKey(now);
+  for (const clock of autoUpdateTimes) {
+    const parts = clock.split(':').map(Number);
+    const target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), parts[0], parts[1], 0, 0);
+    const lag = now.getTime() - target.getTime();
+    const key = date + '@' + clock;
+    if (lag >= 0 && lag < 10 * 60 * 1000 && key !== lastAutoUpdateSlot) {
+      return { key, clock };
+    }
+  }
+  return null;
+}
+
+function checkAutoUpdate(now) {
+  if (!autoUpdateEnabled || autoUpdateRunning) return false;
+  const slot = dueAutoSlot(now instanceof Date ? now : new Date());
+  if (!slot) return false;
+  // 先落标记再执行，避免 30 秒轮询在慢速蓝牙推送期间重入；失败可用「立即测试」重试。
+  lastAutoUpdateSlot = slot.key;
+  saveAutoPrefs();
+  addLog('到达每日研报时段 ' + slot.clock + '，开始自动推送...');
+  runAutoUpdate(slot.clock);
+  return true;
+}
+
+async function ensureAutoConnection() {
+  if (gattServer != null && gattServer.connected) return true;
+  if (bleDevice == null) return false;
+
+  // 已经选过设备：自动更新可以复用 BluetoothDevice，无需再次弹选择框。
+  resetVariables();
+  addLog('自动推送：正在重连已选择设备...');
+  await connect();
+  return gattServer != null && gattServer.connected;
+}
+
+async function runAutoUpdate(slotLabel) {
+  if (autoUpdateRunning) return false;
+  autoUpdateRunning = true;
+  showAutoStatus('正在更新' + (slotLabel ? '（' + slotLabel + '）' : '') + '...');
 
   try {
-    const connected = gattServer != null && gattServer.connected;
-
-    if (!connected && bleDevice == null) {
-      // 从未连接过，无法无手势自动弹出设备选择框
-      addLog("自动更新：未找到已配对设备，请先手动连接一次");
-      status.textContent = "自动更新：未配对设备，请先手动连接";
-      return;
+    if (bleDevice == null) {
+      addLog('自动推送：未找到已选择设备，请先手动连接一次');
+      showAutoStatus('未选择设备，请先手动连接');
+      return false;
     }
 
-    if (!connected) {
-      // 已有设备但未连接，先重连
-      addLog("自动更新：正在重连设备...");
-      await reConnect();
+    if (!await ensureAutoConnection()) {
+      addLog('自动推送：设备重连失败，已跳过本次');
+      showAutoStatus('连接失败，已跳过');
+      return false;
     }
 
-    // 连接成功后同步时间
-    if (gattServer != null && gattServer.connected) {
-      await syncTime(1);
-      addLog("自动更新：每日蓝牙更新完成");
-      status.textContent = "自动更新：已启用（每日 " + autoUpdateTime + "）";
-    } else {
-      addLog("自动更新：连接失败，已跳过本次更新");
-      status.textContent = "自动更新：连接失败，已跳过";
+    await syncTime(1);
+    if (typeof pushLatestSummary !== 'function') {
+      throw new Error('每日研报脚本尚未加载');
     }
+    const pushed = await pushLatestSummary();
+    if (pushed === false) throw new Error('研报图像推送未完成');
+
+    addLog('自动推送：007 每日研报已显示到墨水屏');
+    showAutoStatus();
+    return true;
   } catch (e) {
     console.error(e);
-    if (e.message) addLog("自动更新：失败 - " + e.message);
-    status.textContent = "自动更新：执行出错";
+    addLog('自动推送失败：' + (e.message || String(e)));
+    showAutoStatus('执行出错');
+    return false;
+  } finally {
+    autoUpdateRunning = false;
   }
 }
 
 function testAutoUpdate() {
-  addLog("手动触发自动更新测试...");
-  lastAutoUpdateDate = ""; // 重置日期标记，允许立即执行
-  runAutoUpdate();
+  addLog('手动测试：立即读取 007 并推送每日研报...');
+  return runAutoUpdate('测试');
 }
 
 document.body.onload = () => {
   updateButtonStatus();
-  // 从 DOM 同步开关初始状态
-  const chk = document.getElementById("chk-auto-update");
+  loadAutoPrefs();
+
+  const chk = document.getElementById('chk-auto-update');
+  const am = document.getElementById('time-auto-update-am');
+  const pm = document.getElementById('time-auto-update-pm');
   if (chk) chk.checked = autoUpdateEnabled;
-  const status = document.getElementById("auto-status");
-  if (status) status.textContent = "自动更新：" + (autoUpdateEnabled ? "已启用（每日 " + autoUpdateTime + "）" : "已停止");
-}
+  if (am) am.value = autoUpdateTimes[0];
+  if (pm) pm.value = autoUpdateTimes[1];
+  showAutoStatus();
+  if (autoUpdateEnabled) startAutoUpdateChecker();
+};

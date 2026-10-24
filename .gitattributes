@@ -1,0 +1,2 @@
+# Legacy browser scripts use CRLF line endings; do not flag CR as trailing space.
+*.js whitespace=cr-at-eol

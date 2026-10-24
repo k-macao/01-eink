@@ -1,0 +1,122 @@
+name: 同步 007 · 每日研报两更
+
+on:
+  schedule:
+    # GitHub cron is UTC. Macau/Hong Kong is UTC+8.
+    - cron: '10 1 * * *' # 09:10 早报
+    - cron: '10 9 * * *' # 17:10 晚报
+  workflow_dispatch:
+    inputs:
+      edition:
+        description: '手动运行的版次'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - 早报
+          - 晚报
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-007-report-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: 读取 k-macao/007 并生成墨水屏四栏目
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      SCHEDULE_CRON: ${{ github.event.schedule }}
+      MANUAL_EDITION: ${{ inputs.edition }}
+      PYTHONUNBUFFERED: '1'
+
+    steps:
+      - name: Checkout e-ink page
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          # The mutable 007 collector runs later; do not leave a write token in .git.
+          persist-credentials: false
+
+      - name: Checkout latest repository 007 source
+        shell: bash
+        run: git clone --depth 1 https://github.com/k-macao/007.git "$RUNNER_TEMP/repo-007"
+
+      - name: Resolve morning / evening edition
+        id: edition
+        shell: bash
+        run: |
+          if [[ "$MANUAL_EDITION" == "早报" || "$MANUAL_EDITION" == "晚报" ]]; then
+            edition="$MANUAL_EDITION"
+          elif [[ "$SCHEDULE_CRON" == "10 1 * * *" ]]; then
+            edition="早报"
+          elif [[ "$SCHEDULE_CRON" == "10 9 * * *" ]]; then
+            edition="晚报"
+          else
+            edition="auto"
+          fi
+          echo "value=$edition" >> "$GITHUB_OUTPUT"
+
+      - name: Collect public facts with 007 (no secrets available)
+        shell: bash
+        run: |
+          python tools/sync_007_report.py \
+            --source-dir "$RUNNER_TEMP/repo-007" \
+            --snapshot-output "$RUNNER_TEMP/007-snapshot.json" \
+            --output "$RUNNER_TEMP/007-rule-report.json" \
+            --edition "${{ steps.edition.outputs.value }}" \
+            --hours 24 \
+            --timeout 35 \
+            --no-ai
+
+      - name: Build the four requested columns
+        shell: bash
+        env:
+          # Optional. Only this trusted snapshot-render step receives the secret.
+          # Without it, the deterministic 007 sentiment reducer remains complete.
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          python tools/sync_007_report.py \
+            --snapshot "$RUNNER_TEMP/007-snapshot.json" \
+            --output data/007-report.json \
+            --edition "${{ steps.edition.outputs.value }}" \
+            --timeout 35
+
+      - name: Validate report contract
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          p = Path('data/007-report.json')
+          d = json.loads(p.read_text(encoding='utf-8'))
+          assert d['title'] == '章鱼 AI.每日研报'
+          assert d['source']['repository'] == 'k-macao/007'
+          assert d['probability']['long'] + d['probability']['short'] == 100
+          assert d['topics'] and d['risks'] and d['opportunities']
+          print(f"contract ok: {d['date']} {d['time']} {d['edition']} · {d['sample_count']} samples")
+          PY
+
+      - name: Publish only when report changed
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Install write credentials only after all 007 code has finished.
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/007-report.json
+          if git diff --cached --quiet; then
+            echo "007 report is unchanged; nothing to publish."
+            exit 0
+          fi
+          edition="${{ steps.edition.outputs.value }}"
+          git commit -m "data: sync 007 ${edition} report"
+          git pull --rebase origin "$GITHUB_REF_NAME"
+          git push origin "HEAD:$GITHUB_REF_NAME"
