@@ -5,6 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const path = require('node:path');
 const vm = require('node:vm');
 
@@ -47,8 +48,8 @@ function createStubContext(w, h) {
 function loadModule(fetchImpl) {
   const ui = {
     'sum-size': '400x300',
-    'sum-font': 'hei',
-    'sum-size-scale': 'normal',
+    'sum-font': 'puhui',
+    'sum-size-scale': 'fixed16',
     'sum-zoom': '1',
   };
   const elements = new Map();
@@ -61,8 +62,8 @@ function loadModule(fetchImpl) {
       disabled: null,
       style: {},
       textContent: '',
-      options: ['400x300', '296x128', '250x122', 'hei', 'song', 'kai', 'mono',
-        'small', 'normal', 'large', '1', '2', '3'].map(value => ({ value })),
+      options: ['400x300', '296x128', '250x122', 'puhui', 'fixed16', '1', '2', '3']
+        .map(value => ({ value })),
       addEventListener() {},
       getContext() { return createStubContext(400, 300); },
     };
@@ -71,6 +72,7 @@ function loadModule(fetchImpl) {
   };
 
   const store = {};
+  const fontRequests = [];
   const sandbox = {
     console,
     Math,
@@ -86,6 +88,9 @@ function loadModule(fetchImpl) {
     },
     document: {
       readyState: 'loading',
+      fonts: {
+        load: async (...args) => { fontRequests.push(args); return [{}]; },
+      },
       addEventListener() {},
       getElementById: makeElement,
       createElement: () => makeElement('tmp-' + Math.random()),
@@ -95,7 +100,7 @@ function loadModule(fetchImpl) {
   sandbox.globalThis = sandbox;
   vm.createContext(sandbox);
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', 'ai-summary.js'), 'utf8'), sandbox);
-  return { sandbox, makeElement, store };
+  return { sandbox, makeElement, store, fontRequests };
 }
 
 const box = loadModule();
@@ -104,6 +109,8 @@ const get = name => vm.runInContext(name, sandbox);
 const call = (name, ...args) => get(name)(...args);
 const REPORT_TEXT = fs.readFileSync(path.join(ROOT, 'data', '007-report.json'), 'utf8');
 const REPORT = JSON.parse(REPORT_TEXT);
+const INDEX_HTML = fs.readFileSync(path.join(ROOT, 'index.html'), 'utf8');
+const MAIN_CSS = fs.readFileSync(path.join(ROOT, 'css', 'main.css'), 'utf8');
 
 function parsedCard() {
   return call('buildCard', call('parse007Report', REPORT_TEXT));
@@ -113,7 +120,7 @@ test('读取真实 007 JSON，并保留来源与互补多空概率', () => {
   const report = call('parse007Report', REPORT_TEXT);
   assert.strictEqual(report.source.repository, 'k-macao/007');
   assert.strictEqual(report.probability.long + report.probability.short, 100);
-  assert.strictEqual(report.probability.long, 62);
+  assert.strictEqual(report.probability.long, REPORT.probability.long);
   assert.ok(report.topics.length >= 3);
   assert.ok(report.risks.length >= 2);
   assert.ok(report.opportunities.length >= 2);
@@ -124,8 +131,8 @@ test('卡片只显示附图指定的四个栏目', () => {
   assert.strictEqual(card.lines.map(line => line.label).join('/'),
     'AI 多空概率/热点话题/风险点/机会点');
   assert.strictEqual(card.lines.length, 4);
-  assert.match(card.date, /^2026-10-24 21:01 晚报$/);
-  assert.strictEqual(card.section, '007 · 晚报');
+  assert.strictEqual(card.date, [REPORT.date, REPORT.time, REPORT.edition].join(' '));
+  assert.strictEqual(card.section, '007 · ' + REPORT.edition);
   assert.ok(!card.lines.some(line => /今日盘点|明日关注|窗口摘要|AI 结论/.test(line.label)));
 });
 
@@ -139,6 +146,7 @@ test('标题按要求精确改为「章鱼 AI.每日研报」', () => {
 });
 
 test('小屏候选是完整栏目内容，不依赖硬截断', () => {
+  assert.strictEqual(call('completeClause', '【某机构：A股预期改善'), 'A股预期改善');
   const card = parsedCard();
   for (const line of card.lines) {
     assert.ok(Array.isArray(line.alts) && line.alts.length >= 1, line.label + ' 缺少候选');
@@ -147,8 +155,9 @@ test('小屏候选是完整栏目内容，不依赖硬截断', () => {
   }
   const topics = card.lines[1];
   assert.ok(topics.alts.length >= 4, '热点应能逐级缩到 1 条');
-  assert.ok(topics.alts.at(-1).includes('中东地缘'));
-  assert.ok(!topics.alts.at(-1).endsWith('…'));
+  assert.ok(topics.alts.includes(call('completeClause', REPORT.topics[0].text)));
+  assert.ok(topics.alts.includes(call('completeClause', REPORT.topics[1].text)),
+    '窄屏应可选择下一条完整短句');
 });
 
 test('无效 JSON、错误来源、缺栏目均会显式拒绝', () => {
@@ -176,13 +185,13 @@ test('只给一边概率时自动补齐；不一致时以多头为准归一', ()
   assert.strictEqual(badSum.probability.short, 28);
 });
 
-test('三种屏幕尺寸都不越界，且四个栏目全部保留', () => {
+test('三种屏幕正文都严格为 16px、不越界，且四个栏目全部保留', () => {
   const card = parsedCard();
   const opts = call('sumDisplayOptions');
   for (const [w, h] of [[400, 300], [296, 128], [250, 122]]) {
     const ctx = createStubContext(w, h);
     const layout = call('drawCard', ctx, card, w, h, opts);
-    assert.ok(layout.bodySize >= 10, `${w}x${h} 字号过小：${layout.bodySize}`);
+    assert.strictEqual(layout.bodySize, 16, `${w}x${h} 必须严格使用 16px`);
     assert.strictEqual(layout.blocks.length, 4, `${w}x${h} 应保留四栏目`);
     layout.blocks.forEach((block, index) => {
       assert.ok(card.lines[index].alts.includes(block.item.text),
@@ -222,14 +231,36 @@ test('折行不把标点甩到行首，也不拆英文和百分比', () => {
   assert.ok(lines.some(line => line.includes('62%') || line.includes('38%')), JSON.stringify(lines));
 });
 
-test('字号档位单调：小 ≤ 标准 ≤ 大', () => {
+test('页面自托管阿里巴巴普惠体 Regular，并锁定字体与字号控件', () => {
+  const fontPath = path.join(ROOT, 'fonts', 'AlibabaPuHuiTi-3-55-Regular.woff2');
+  const font = fs.readFileSync(fontPath);
+  assert.strictEqual(font.subarray(0, 4).toString('ascii'), 'wOF2');
+  assert.strictEqual(crypto.createHash('sha256').update(font).digest('hex'),
+    '287046cd518a90d7bbf3a7fddb509df5912aedb98a6055d2d96975f2495122fc');
+  assert.ok(font.length > 1_000_000, '字体文件异常过小');
+  assert.match(MAIN_CSS, /@font-face[\s\S]*font-family:\s*"Alibaba PuHuiTi 3"/);
+  assert.match(MAIN_CSS, /font-weight:\s*400/);
+  assert.match(MAIN_CSS, /AlibabaPuHuiTi-3-55-Regular\.woff2/);
+  assert.match(INDEX_HTML, /rel="preload"[^>]*AlibabaPuHuiTi-3-55-Regular\.woff2[^>]*as="font"/);
+  assert.match(INDEX_HTML, /id="sum-font" disabled[^>]*>[\s\S]*value="puhui" selected/);
+  assert.match(INDEX_HTML, /id="sum-size-scale" disabled[^>]*>[\s\S]*value="fixed16" selected>16px/);
+});
+
+test('默认严格使用阿里巴巴普惠体、三款屏幕正文 16px、非加粗', () => {
   const card = parsedCard();
-  const base = call('sumDisplayOptions');
-  const sizeOf = offset => call('drawCard', createStubContext(400, 300), card, 400, 300,
-    Object.assign({}, base, { offset })).bodySize;
-  const small = sizeOf(-1), normal = sizeOf(0), large = sizeOf(2);
-  assert.ok(small <= normal, `${small} > ${normal}`);
-  assert.ok(normal <= large, `${normal} > ${large}`);
+  const opts = call('sumDisplayOptions');
+  assert.strictEqual(opts.fontKey, 'puhui');
+  assert.strictEqual(opts.fontLabel, '阿里巴巴普惠体 · 非加粗');
+  assert.strictEqual(opts.bodySize, 16);
+  assert.strictEqual(opts.boldBody, false);
+  assert.match(call('cardFont', 16, opts, true), /^400 16px .*Alibaba PuHuiTi 3/);
+  assert.ok(!call('cardFont', 16, opts, true).includes('bold'));
+
+  const ctx = createStubContext(400, 300);
+  const layout = call('drawCard', ctx, card, 400, 300, opts);
+  assert.strictEqual(layout.bodySize, 16);
+  assert.ok(ctx.texts.every(item => !item.font.includes('bold')));
+  assert.ok(ctx.texts.every(item => item.font.includes('Alibaba PuHuiTi 3')));
 });
 
 test('1bpp 位平面：1=白 0=黑；红层与非 8 倍数行尾正确', () => {
@@ -270,18 +301,13 @@ test('字体样张能画满且不越界', () => {
   }
 });
 
-test('字体/字号偏好只恢复下拉中存在的值', () => {
+test('旧字体偏好不能覆盖固定的普惠体 16px 配置', () => {
   const fresh = loadModule();
   fresh.store['epd.sum-font'] = 'mono';
   fresh.store['epd.sum-size-scale'] = 'large';
   vm.runInContext('restoreSumPrefs()', fresh.sandbox);
-  assert.strictEqual(fresh.makeElement('sum-font').value, 'mono');
-  assert.strictEqual(fresh.makeElement('sum-size-scale').value, 'large');
-
-  fresh.store['epd.sum-font'] = 'not-a-font';
-  fresh.makeElement('sum-font').value = 'hei';
-  vm.runInContext('restoreSumPrefs()', fresh.sandbox);
-  assert.strictEqual(fresh.makeElement('sum-font').value, 'hei');
+  assert.strictEqual(fresh.makeElement('sum-font').value, 'puhui');
+  assert.strictEqual(fresh.makeElement('sum-size-scale').value, 'fixed16');
 });
 
 test('loadSummaryCard 只读取同源 data/007-report.json', async () => {
@@ -293,6 +319,15 @@ test('loadSummaryCard 只读取同源 data/007-report.json', async () => {
   const card = await vm.runInContext('loadSummaryCard()', net.sandbox);
   assert.match(requested, /^data\/007-report\.json\?t=\d+$/);
   assert.strictEqual(card.lines.length, 4);
+});
+
+test('Canvas 绘制前等待阿里巴巴普惠体 WebFont，且只加载一次', async () => {
+  const fresh = loadModule();
+  await vm.runInContext('ensureSummaryFont()', fresh.sandbox);
+  await vm.runInContext('ensureSummaryFont()', fresh.sandbox);
+  assert.strictEqual(fresh.fontRequests.length, 1);
+  assert.match(fresh.fontRequests[0][0], /^400 16px "Alibaba PuHuiTi 3"$/);
+  assert.match(fresh.fontRequests[0][1], /章鱼研报/);
 });
 
 test('页面定时检查只在 007 报告 id 变化时自动重绘', async () => {

@@ -4,7 +4,8 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>章鱼 AI.每日研报</title>
-	<link rel="stylesheet" href="css/main.css?v=20261024-007a">
+    <link rel="preload" href="fonts/AlibabaPuHuiTi-3-55-Regular.woff2" as="font" type="font/woff2" crossorigin>
+	<link rel="stylesheet" href="css/main.css?v=20261024-puhui16">
 </head>
 
 <body>
@@ -42,17 +43,12 @@
                         <option value="250x122">2.13 寸 250×122</option>
                     </select>
                     <label for="sum-font">字体</label>
-                    <select id="sum-font" onchange="previewSummary()">
-                        <option value="hei" selected>黑体加粗</option>
-                        <option value="song">宋体加粗</option>
-                        <option value="kai">楷体加粗</option>
-                        <option value="mono">等宽点阵</option>
+                    <select id="sum-font" disabled aria-label="固定字体：阿里巴巴普惠体，常规字重">
+                        <option value="puhui" selected>阿里巴巴普惠体（非加粗）</option>
                     </select>
                     <label for="sum-size-scale">字号</label>
-                    <select id="sum-size-scale" onchange="previewSummary()">
-                        <option value="small">小（内容优先）</option>
-                        <option value="normal" selected>标准</option>
-                        <option value="large">大（字大优先）</option>
+                    <select id="sum-size-scale" disabled aria-label="固定字号：16px">
+                        <option value="fixed16" selected>16px</option>
                     </select>
                     <label for="sum-zoom">预览</label>
                     <select id="sum-zoom" onchange="previewSummary()">
@@ -71,7 +67,7 @@
                     <button id="btn-push-sample" type="button" class="secondary" onclick="pushFontSample()">推送字体样张</button>
                 </div>
             </div>
-            <div class="sum-hint">每天澳门时间 09:10 / 17:10 读取仓库 007；屏上只显示「AI 多空概率、热点话题、风险点、机会点」。字体不清楚时可先推送字体样张。</div>
+            <div class="sum-hint">每天澳门时间 09:10 / 17:10 读取仓库 007；屏上只显示「AI 多空概率、热点话题、风险点、机会点」。固定使用阿里巴巴普惠体、16px、非加粗；三种屏幕均保留完整四栏。</div>
             <canvas id="sum-preview"
                 style="display:none;width:100%;max-width:420px;margin-top:10px;border:1px solid #E4E4E7;image-rendering:pixelated;"></canvas>
             <div id="sum-status" style="margin-top:8px;font-size:0.9rem;color:#666;">尚未生成预览</div>
@@ -93,8 +89,8 @@
             <div id="auto-status" style="margin-top:8px; font-size:0.9rem; color:#666;">自动推送：已停止</div>
         </fieldset>
     </div>
-    <script type="text/javascript" src="js/main.js?v=20261024-007a"></script>
-    <script type="text/javascript" src="js/ai-summary.js?v=20261024-007a"></script>
+    <script type="text/javascript" src="js/main.js?v=20261024-puhui16"></script>
+    <script type="text/javascript" src="js/ai-summary.js?v=20261024-puhui16"></script>
 </body>
 
 </html>

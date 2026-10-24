@@ -169,10 +169,19 @@ function uniqueVariants(values) {
  * narrow screens a real alternative instead of manufacturing an ellipsis.
  */
 function completeClause(value) {
-  const text = cleanReportText(value);
+  let text = cleanReportText(value);
+
+  // 007 偶尔会给出「【来源：正文」或「【来源：正文】」；短版应保留正文，
+  // 不能只留下一个未闭合的「【来源」。
+  const sourceColon = text.search(/[：:]/);
+  const sourceClose = text.indexOf('】');
+  if (text.startsWith('【') && sourceColon >= 0 && (sourceClose < 0 || sourceColon < sourceClose)) {
+    text = text.slice(sourceColon + 1).trim();
+  }
+
   const cut = text.search(/[：:，,；;。！？!?]/);
   if (cut >= 4) return text.slice(0, cut).trim().replace(/若(?=持续|继续|出现|发生|未|不)/, '');
-  return text;
+  return text.replace(/^【(?=[^】]*$)/, '');
 }
 
 /** Build progressively shorter, punctuation-complete alternatives for small screens. */
@@ -193,6 +202,8 @@ function itemVariants(items, formatter, separator) {
     clauses.slice(0, 2).join(sep),
     plain.slice(0, 1).join(sep),
     clauses.slice(0, 1).join(sep),
+    // 若首条在 250px 窄屏仍放不下，可选下一条完整短句，不做硬截断。
+    ...clauses.slice(1),
   ]);
 }
 
@@ -233,80 +244,70 @@ function buildCard(report) {
 // ---------- 渲染 ----------
 
 /**
- * 墨水位图清不清楚，取决于四件事：最终像素字号、字重、字体的中文字形、
- * 以及二值化阈值（见后面的 SUM_INK_THRESHOLD）。
- *
- * 旧版的问题是：正文只有 11px、常规字重、字体栈只写了 sans-serif，
- * 在不少系统上会落到很细的中文黑体（思源黑体 Light / 系统细体），
- * 1bpp 二值化后笔画直接断成虚线——这就是「字体不清」的根因。
- *
- * 现在的策略：
- *   ① 字体栈显式列出各平台的中文字体（PingFang / 微软雅黑 / Noto Sans SC …）；
- *   ② 13px 起加粗，低于 13px 自动回到常规字重（小字加粗会把字腔糊死）；
- *   ③ 字号优先「一个字都不截就能排下的最大号」，档位可再上下偏移；
- *   ④ 阈值从 140 抬到 176，避免抗锯齿的灰边把笔画糊成实心块。
+ * 固定使用随页面打包的阿里巴巴普惠体 3.0 / 55 Regular。
+ * 三款支持的屏幕正文均严格使用 16px；标题、栏目标签、正文均不合成粗体。
+ * 两款矮屏通过单行紧凑排版和完整短句候选保留全部四栏，而不是缩小字号。
  */
 const SUM_FONTS = {
-  hei: {
-    label: '黑体加粗',
-    body: "'PingFang SC','Hiragino Sans GB','Microsoft YaHei','Noto Sans SC','Source Han Sans SC','Noto Sans CJK SC','Heiti SC','WenQuanYi Micro Hei',sans-serif",
-    boldBody: true,
-  },
-  song: {
-    label: '宋体加粗',
-    body: "'Songti SC','Noto Serif SC','Source Han Serif SC','Noto Serif CJK SC','SimSun',serif",
-    boldBody: true,
-  },
-  kai: {
-    label: '楷体加粗',
-    body: "'Kaiti SC','KaiTi','STKaiti','Noto Serif SC','Noto Serif CJK SC',serif",
-    boldBody: true,
-  },
-  mono: {
-    label: '等宽点阵',
-    body: "'Sarasa Mono SC','Noto Sans Mono CJK SC','Noto Sans SC','PingFang SC','Microsoft YaHei',ui-monospace,monospace",
-    boldBody: true,
+  puhui: {
+    label: '阿里巴巴普惠体 · 非加粗',
+    body: "'Alibaba PuHuiTi 3','Alibaba PuHuiTi 3.0','Microsoft YaHei',sans-serif",
+    boldBody: false,
   },
 };
 
-/**
- * 字号档位。rate 决定基准字号，weight 决定「字大」和「字多」的取舍：
- * weight 越大越偏向把话写全，越小越偏向把字写大。
- */
 const SUM_SIZE_SCALE = {
-  small: { label: '小', offset: -1 },
-  normal: { label: '标准', offset: 0 },
-  large: { label: '大', offset: 2 },
+  fixed16: { label: '16px', offset: 0, bodySize: 16 },
 };
 
-/** 字号硬下限：再小在 4.2 寸屏上就只剩黑糊糊一片了 */
-const SUM_MIN_FONT = 10;
+const SUM_WEB_FONT = 'Alibaba PuHuiTi 3';
+let sumFontLoadPromise = null;
 
-/** 加粗的最小字号：再小加粗会把笔画粘成一团 */
-const SUM_BOLD_MIN = 13;
+/** Canvas 必须等 WebFont 就绪后再量字，否则首屏会悄悄落到系统字体。 */
+function ensureSummaryFont() {
+  if (typeof document === 'undefined' || !document.fonts || typeof document.fonts.load !== 'function') {
+    return Promise.resolve(false);
+  }
+  if (!sumFontLoadPromise) {
+    sumFontLoadPromise = document.fonts.load(
+      '400 16px "' + SUM_WEB_FONT + '"', '章鱼研报多空热点风险机会'
+    ).then(faces => {
+      if (!faces || !faces.length) throw new Error('阿里巴巴普惠体加载失败');
+      return true;
+    }).catch(error => {
+      sumFontLoadPromise = null;
+      throw error;
+    });
+  }
+  return sumFontLoadPromise;
+}
+
+/** 旧调用未指定固定字号时的兼容下限；页面的三款屏幕均固定使用 16px。 */
+const SUM_MIN_FONT = 10;
 
 function sumDisplayOptions() {
   const fontEl = document.getElementById('sum-font');
-  const fontKey = (fontEl && fontEl.value) || 'hei';
-  const font = SUM_FONTS[fontKey] || SUM_FONTS.hei;
+  const fontKey = (fontEl && fontEl.value) || 'puhui';
+  const font = SUM_FONTS[fontKey] || SUM_FONTS.puhui;
 
   const scaleEl = document.getElementById('sum-size-scale');
-  const scaleKey = (scaleEl && scaleEl.value) || 'normal';
-  const scaleDef = SUM_SIZE_SCALE[scaleKey] || SUM_SIZE_SCALE.normal;
+  const scaleKey = (scaleEl && scaleEl.value) || 'fixed16';
+  const scaleDef = SUM_SIZE_SCALE[scaleKey] || SUM_SIZE_SCALE.fixed16;
 
   return {
-    fontKey: SUM_FONTS[fontKey] ? fontKey : 'hei',
+    fontKey: SUM_FONTS[fontKey] ? fontKey : 'puhui',
     fontFamily: font.body,
-    boldBody: font.boldBody !== false,
+    boldBody: false,
     fontLabel: font.label,
     scaleLabel: scaleDef.label,
-    offset: scaleDef.offset || 0,
+    bodySize: scaleDef.bodySize,
+    offset: 0,
   };
 }
 
-// ---------- 偏好记忆（刷新页面后仍用上次挑好的字号 / 字体） ----------
+// ---------- 偏好记忆（字体 / 16px 固定，只记屏幕尺寸与预览倍数） ----------
 
-const SUM_PREF_KEYS = ['sum-size', 'sum-font', 'sum-size-scale', 'sum-zoom'];
+const SUM_PREF_KEYS = ['sum-size', 'sum-zoom'];
 
 function saveSumPrefs() {
   try {
@@ -337,18 +338,14 @@ function bindSumPrefs() {
   });
 }
 
-function cardFont(size, opts, bold) {
-  const fam = (opts && opts.fontFamily) || SUM_FONTS.hei.body;
-  return (bold ? 'bold ' : '') + size + 'px ' + fam;
+function cardFont(size, opts, _bold) {
+  const fam = (opts && opts.fontFamily) || SUM_FONTS.puhui.body;
+  return '400 ' + size + 'px ' + fam;
 }
 
-/**
- * 某个字号下该不该加粗：小字号加粗会把「日/目/口/赢」这类字腔糊成实心块，
- * 所以 13px 以下自动回到常规字重。
- */
-function sumBold(size, opts) {
-  const want = !(opts && opts.boldBody === false);
-  return want && size >= SUM_BOLD_MIN;
+/** 用户指定全卡使用 Regular，不允许浏览器合成粗体。 */
+function sumBold(_size, _opts) {
+  return false;
 }
 
 // 避头尾：这些标点不放在行首 / 行尾，否则整行看着就像断错了
@@ -509,7 +506,7 @@ function stripBreakSep(line) {
  * 把卡片画到 canvas 上，返回最终排版结果（字号、条数、是否截短），
  * 供预览状态栏与推送日志复用。纯 canvas 2D API，便于在 Node 中用桩测试。
  *
- * opts: { fontFamily, fontLabel, boldBody, offset }
+ * opts: { fontFamily, fontLabel, boldBody, bodySize }
  */
 function drawCard(ctx, card, w, h, opts) {
   opts = opts || {};
@@ -538,8 +535,8 @@ function drawCard(ctx, card, w, h, opts) {
   const areaBottom = h - pad - footSize - Math.round(pad * 0.3);
   const areaHeight = areaBottom - areaTop;
 
-  // 400×300 → 基准 16px（旧版是 11px，1bpp 后基本看不清），最大 24px；
-  // 上限还要受正文可用高度约束，否则 296×128 这种矮屏会一路缩到 10px
+  // 未显式传入固定字号的兼容路径仍按画布计算上下限；页面配置会在下方
+  // 直接指定 16px，不使用这套自适应上限。
   const baseBody = clamp(Math.round(h * 0.052), SUM_MIN_FONT, 22);
   const maxBody = clamp(Math.min(baseBody + 7, Math.floor(areaHeight / 5.2)), baseBody, 24);
 
@@ -550,11 +547,14 @@ function drawCard(ctx, card, w, h, opts) {
   const squeezeText = t => String(t).replace(/\s+/g, '');
 
   const totalChars = source.reduce((a, it) => a + squeezeText(it.text).length, 0) || 1;
+  const fixedCompact = Number(opts.bodySize) === 16 && h <= 128;
 
   /** 某个字号下，每条内容按可用宽度折行后的行数 */
   const measureBlock = (item, bodySize, labelSize) => {
     ctx.font = cardFont(labelSize, opts, boldAt(labelSize));
-    let labelW = ctx.measureText(item.label).width + Math.round(labelSize * 0.6);
+    // 250px 窄屏少留 0.15em 标签间距，刚好容纳完整风险短句；字形不缩小。
+    const labelGap = fixedCompact ? 0.45 : 0.6;
+    let labelW = ctx.measureText(item.label).width + Math.round(labelSize * labelGap);
     if (labelW > maxWidth * 0.34) labelW = maxWidth * 0.34;
     const bodyW = maxWidth - labelW;
     ctx.font = cardFont(bodySize, opts, boldAt(bodySize));
@@ -572,8 +572,9 @@ function drawCard(ctx, card, w, h, opts) {
     const labelSize = Math.max(9, Math.min(bodySize, 17));
     const lhFactor = tighten ? 1.36 : 1.5;
     const gapFactor = tighten ? 0.24 : 0.4;
-    const lineH = Math.round(bodySize * lhFactor);
-    const blockGap = Math.max(2, Math.round(bodySize * gapFactor));
+    // 122/128px 高度可容纳四个 16px 单行区块：不降字号，只压缩行距。
+    const lineH = fixedCompact && tighten ? bodySize : Math.round(bodySize * lhFactor);
+    const blockGap = fixedCompact && tighten ? 1 : Math.max(2, Math.round(bodySize * gapFactor));
     const capacity = Math.floor((areaHeight - blockGap * (count - 1)) / lineH);
     if (capacity < count) return null;
 
@@ -665,10 +666,13 @@ function drawCard(ctx, card, w, h, opts) {
     return fallback ? fallback.size : SUM_MIN_FONT;
   };
 
-  // 小屏（2.9 寸 / 2.13 寸）上没有「全放下」的字号，此时按屏幕高度给一个
-  // 最低可读字号，宁可每条只留一行，也不要把整张卡缩成 10px 糊成一片
+  // 显式配置的 16px 不再受矮屏自适应上限影响；两款矮屏由紧凑单行布局承载。
   const minReadable = clamp(Math.round(h * 0.09), SUM_MIN_FONT, 14);
-  const target = clamp(nativeSize() + offset, minReadable, maxBody);
+  const requestedSize = Number(opts.bodySize);
+  const preferredSize = Number.isFinite(requestedSize) ? requestedSize : nativeSize() + offset;
+  const target = Number.isFinite(requestedSize)
+    ? requestedSize
+    : clamp(preferredSize, minReadable, maxBody);
   let layout = planLayout(target, 0, false) || planLayout(target, 0, true);
   for (let size = target - 1; size >= SUM_MIN_FONT && !layout; size--) {
     layout = planLayout(size, 0, false) || planLayout(size, 0, true);
@@ -875,6 +879,7 @@ async function previewSummary(force) {
   if (!sumCardCache) sumStatus('正在读取仓库007最新研报...');
   try {
     const card = await getSummaryCard(force === true);
+    await ensureSummaryFont();
     const { layout, opts } = renderSummaryToCanvas(canvas, card);
     canvas.style.display = 'block';
     applySumZoom(canvas);
@@ -894,6 +899,7 @@ async function refreshSummaryIfChanged() {
   try {
     const card = await getSummaryCard(true);
     if (previousId && card.id === previousId) return false;
+    await ensureSummaryFont();
     const canvas = document.getElementById('sum-preview');
     const { layout, opts } = renderSummaryToCanvas(canvas, card);
     canvas.style.display = 'block';
@@ -1003,6 +1009,7 @@ async function pushLatestSummary() {
   return withPushGuard('btn-push-summary', '每日研报', async () => {
     sumStatus('正在读取仓库007最新研报...');
     const card = await getSummaryCard(true);
+    await ensureSummaryFont();
 
     const canvas = document.getElementById('sum-preview');
     const { layout, size, opts } = renderSummaryToCanvas(canvas, card);
@@ -1034,7 +1041,6 @@ function sampleSizes(base) {
 function drawFontSample(ctx, w, h, opts) {
   const pad = Math.max(6, Math.round(Math.min(w, h) * 0.045));
   const maxWidth = w - pad * 2;
-  const offset = (opts && opts.offset) || 0;
 
   ctx.fillStyle = '#FFFFFF';
   ctx.fillRect(0, 0, w, h);
@@ -1050,7 +1056,7 @@ function drawFontSample(ctx, w, h, opts) {
 
   const headTop = pad + titleSize + Math.round(pad * 0.4);
   ctx.font = cardFont(headSize, opts, false);
-  ctx.fillText('同句对比 · 字重 / 字号 · ' + ((opts && opts.fontLabel) || '黑体'), pad, headTop);
+  ctx.fillText('同句对比 · 全部非加粗 · 基准16px', pad, headTop);
   const right = '挑最清楚的';
   ctx.fillText(right, w - pad - ctx.measureText(right).width, headTop);
 
@@ -1058,19 +1064,12 @@ function drawFontSample(ctx, w, h, opts) {
   const ruleH = Math.max(2, Math.round(h * 0.007));
   ctx.fillRect(pad, ruleY, maxWidth, ruleH);
 
-  const base = Math.max(SUM_MIN_FONT, Math.min(22, Math.round(h * 0.052) + offset));
-  // 同一字号下一粗一常并排，才能看出「加粗糊不糊」；再补两档更小/更大的
-  const rows = [
-    { size: base + 3, bold: true },
-    { size: base, bold: true },
-    { size: base, bold: false },
-    { size: base - 3, bold: true },
-    { size: base - 5, bold: false },
-  ]
-    .map(r => ({ size: r.size, bold: r.bold && sumBold(r.size, opts) }))
-    .filter(r => r.size >= SUM_MIN_FONT && r.size <= 26)
-    // 小屏上字号档位会撞车（如 10px 粗/常 只剩「常」），去掉重复行
-    .filter((r, i, all) => all.findIndex(o => o.size === r.size && o.bold === r.bold) === i);
+  const requested = Number(opts && opts.bodySize);
+  const base = Math.max(SUM_MIN_FONT, Math.min(22, Number.isFinite(requested) ? requested : 16));
+  // 样张可比较相邻字号，但所有行都保持用户指定的 Regular 字重。
+  const rows = [base + 3, base, base - 3, base - 5]
+    .map(size => ({ size, bold: false }))
+    .filter(row => row.size >= SUM_MIN_FONT && row.size <= 26);
 
   const areaTop = ruleY + ruleH + Math.round(pad * 0.55);
   const footSize = Math.max(6, Math.round(h * 0.031));
@@ -1109,6 +1108,7 @@ function drawFontSample(ctx, w, h, opts) {
 
 /** 生成并推送字体样张；未连接设备时只预览 */
 async function pushFontSample() {
+  await ensureSummaryFont();
   const canvas = document.getElementById('sum-preview');
   const opts = sumDisplayOptions();
   const { layout, size } = renderToSumCanvas(canvas, (ctx, w, h) => drawFontSample(ctx, w, h, opts));
