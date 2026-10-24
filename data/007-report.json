@@ -1,73 +1,84 @@
 {
   "schema": 1,
   "title": "章鱼 AI.每日研报",
-  "id": "20261024T210100+0800-d21d46fe",
-  "generated_at": "2026-10-24T21:01:00+08:00",
+  "id": "20261024T221904+0800-d21d46fe",
+  "generated_at": "2026-10-24T22:19:04+08:00",
   "date": "2026-10-24",
-  "time": "21:01",
+  "time": "22:19",
   "edition": "晚报",
   "source": {
     "repository": "k-macao/007",
     "commit": "d21d46feddbf09d6911187034bb929983eabd529",
     "collector": "pushplus_deepseek.collect_feeds",
-    "analysis": "007-inference",
+    "analysis": "007-rule",
     "window_hours": 24
   },
   "sample_count": 151,
   "source_count": 12,
   "probability": {
-    "long": 62,
-    "short": 38,
+    "long": 58,
+    "short": 42,
     "label": "谨慎乐观",
     "note": "基于仓库007本轮 151 条内容 · 12 源"
   },
   "topics": [
     {
-      "text": "中东地缘与油价上行风险",
-      "sentiment": "谨慎悲观",
-      "theme": "能源 / 油价"
+      "text": "【华福证券陈兴：A股估值已充分消化谨慎预期",
+      "sentiment": "积极乐观",
+      "weight": 5.6,
+      "theme": "市场综合",
+      "source_count": 1
     },
     {
-      "text": "AI叙事转向融资与回报审视",
-      "sentiment": "中性观察",
-      "theme": "AI / 算力"
+      "text": "亚马逊AI算力卖断货，订单排到2028年！",
+      "sentiment": "积极乐观",
+      "weight": 5.6,
+      "theme": "AI / 算力",
+      "source_count": 1
     },
     {
-      "text": "国内制造业景气与出口韧性",
-      "sentiment": "谨慎乐观",
-      "theme": "制造 / 出口"
+      "text": "警告“下调评级”数据中心，标普要给AI债务危机“火上浇油”",
+      "sentiment": "极度恐慌",
+      "weight": 5.5,
+      "theme": "AI / 算力",
+      "source_count": 1
     },
     {
-      "text": "锂电排产与电池需求获多源印证",
-      "sentiment": "谨慎乐观",
-      "theme": "锂电 / 电池"
+      "text": "【亿纬锂能：公司四季度排产预计环比增长 产能已确定订满】亿纬锂能10月23日在电话会议…",
+      "sentiment": "积极乐观",
+      "weight": 5.2,
+      "theme": "锂电 / 电池",
+      "source_count": 1
     },
     {
-      "text": "AI算力硬件产能锁定",
-      "sentiment": "谨慎乐观",
-      "theme": "AI / 算力"
+      "text": "宇树科技-W SH688836 涨跌+20.00%，关注增量 4",
+      "sentiment": "积极乐观",
+      "weight": 5.1,
+      "theme": "市场综合",
+      "source_count": 1
     },
     {
-      "text": "油运运价维持高位",
-      "sentiment": "谨慎乐观",
-      "theme": "航运 / 交运"
+      "text": "亿纬锂能 SZ300014 涨跌+6.08%，关注增量 -13",
+      "sentiment": "积极乐观",
+      "weight": 5.1,
+      "theme": "锂电 / 电池",
+      "source_count": 1
     }
   ],
   "risks": [
-    "油价若持续高位，或压制风险资产估值并推升制造成本",
-    "AI融资—投资—收入闭环若继续受质疑，成长股估值或重定价",
-    "美国对外投资限制规则或扰动跨境资本与科技产业链预期",
-    "欧洲政局与区域冲突外溢属于低频高冲击风险"
+    "警告“下调评级”数据中心，标普要给AI债务危机“火上浇油”",
+    "【US allies scramble to cut dependence on SpaceX】US alli…",
+    "中性样本 129/151 条，方向信号仍需后续数据确认"
   ],
   "opportunities": [
-    "锂电与电池产业链：排产及需求景气获多源印证",
-    "AI算力硬件与上游材料：产能锁定、材料关注度上升",
-    "出口制造与航运：外贸采购增长、油运运价走高",
-    "券商AI能力正由单点功能向交易全链路渗透",
-    "机器人产业链的乐观催化仍然活跃"
+    "【华福证券陈兴：A股估值已充分消化谨慎预期",
+    "亚马逊AI算力卖断货，订单排到2028年！",
+    "【亿纬锂能：公司四季度排产预计环比增长 产能已确定订满】亿纬锂能10月23日在电话会议中表示",
+    "宇树科技-W SH688836 涨跌+20.00%，关注增量 4",
+    "亿纬锂能 SZ300014 涨跌+6.08%，关注增量 -13"
   ],
   "data_gaps": [
-    "AI智能检索未命中"
+    "AI 智能检索：跳过（未配置检索密钥）"
   ],
   "disclaimer": "仅供研究参考，不构成投资建议"
 }
