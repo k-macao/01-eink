@@ -218,6 +218,141 @@ test('400×300 的四栏均使用某档完整候选，不把句子腰斩', () =>
   });
 });
 
+/** 网页版完整四栏的量级：热点 6 条带情绪与权重、风险 5 条、机会 5 条。 */
+function heavyPayload() {
+  return {
+    schema: 1, title: '章鱼 AI.每日研报', id: 'heavy-1',
+    date: '2026-10-25', time: '17:10', edition: '晚报',
+    source: { repository: 'k-macao/007' }, sample_count: 50, source_count: 13,
+    probability: { long: 38, short: 62, label: '谨慎悲观', note: '基于 50 条内容' },
+    topics: [
+      { text: '费半狂泻近7%、台积电ADR跌超4.5%', sentiment: '谨慎悲观', weight: 11.8 },
+      { text: '空头血洗美股、多头投降?', sentiment: '谨慎悲观', weight: 5.4 },
+      { text: '半导体SOXX成分股全阵亡', sentiment: '谨慎悲观', weight: 5.3 },
+      { text: '一下子跌入极度恐慌', sentiment: '极度恐慌', weight: 4.7 },
+      { text: '全球资金大逃亡、AI泡沫要破?', sentiment: '极度恐慌', weight: 1.5 },
+      { text: '恒指全周跌1093点、北水连8日流出', sentiment: '极度恐慌', weight: 1.4 },
+    ],
+    risks: [
+      '谨慎悲观档占流量61%,悲观叙事主导易形成自我强化',
+      '极度恐慌标题已现(12条),恐慌若加速或快速逼近下轨',
+      'AI泡沫、AI融资与巨头资本支出担忧被反复放大',
+      '美债息急跌、日元急升等避险信号叠加,波动或加剧',
+      '情绪过热上轨未至,但反弹时需防乐观情绪快速冲高后止盈',
+    ],
+    opportunities: [
+      '情绪指数38处中枢偏下,距下轨25尚有13点缓冲空间',
+      '若恐慌放大触及≤25极度恐慌区,可寻找左侧买点',
+      '部分博主提示最绝望时买入将来最赚,逆向线索浮现',
+      '逢低加码与资产检视类内容出现,显示理性配置需求',
+      '财报错杀、AI算力布局等乐观催化仍被部分高流量视频提及',
+    ],
+  };
+}
+
+test('内容尽量一屏：完整四栏在 400×300 用简压缩装进一屏，无省略号且条数足量', () => {
+  const card = call('buildCard', call('parse007Report', heavyPayload()));
+  const opts = call('sumDisplayOptions');
+  const ctx = createStubContext(400, 300);
+  const layout = call('drawCard', ctx, card, 400, 300, opts);
+
+  assert.strictEqual(layout.bodySize, 16);
+  assert.strictEqual(layout.blocks.length, 4);
+  assert.strictEqual(layout.clean, true, '应找到完整装下一屏的方案');
+  assert.strictEqual(layout.hardTrimmed, 0);
+  layout.blocks.forEach((block, index) => {
+    assert.ok(card.lines[index].alts.includes(block.item.text),
+      `${card.lines[index].label} 不是完整候选：${block.item.text}`);
+    assert.ok(!block.item.text.includes('…'), '不应出现省略号：' + block.item.text);
+  });
+
+  // 用满一屏（旧逻辑 7 行收工并腰斩内容），且每栏保留多条信息而不是只剩一条
+  const totalLines = layout.blocks.reduce((a, b) => a + b.wrapped.length, 0);
+  assert.ok(totalLines >= 8, '400×300 应至少排 8 行，实际 ' + totalLines);
+  const hits = (text, keys) => keys.filter(k => text.includes(k)).length;
+  assert.ok(hits(layout.blocks[1].item.text, ['费半', '空头血洗', 'SOXX', '极度恐慌', '全球资金', '恒指']) >= 3,
+    '热点至少保留 3 条线索：' + layout.blocks[1].item.text);
+  assert.ok(hits(layout.blocks[2].item.text, ['流量61%', '恐慌标题', 'AI泡沫', '美债', '上轨']) >= 2,
+    '风险至少保留 2 条线索：' + layout.blocks[2].item.text);
+  assert.ok(hits(layout.blocks[3].item.text, ['情绪指数38', '极度恐慌区', '最绝望时', '逢低加码', 'AI算力']) >= 2,
+    '机会至少保留 2 条线索：' + layout.blocks[3].item.text);
+  assert.ok(layout.keptRatio >= 0.25, '保留率不应低于 25%，实际 ' + layout.keptRatio);
+
+  // 状态栏应说清是“一屏压缩”，而不是把完整短版误报成截短
+  const desc = call('describeLayout', layout, opts);
+  assert.match(desc, /已压缩（一屏完整）/);
+  assert.ok(!desc.includes('已截短'), desc);
+
+  for (const item of ctx.texts) {
+    assert.ok(item.y >= 0 && item.y < 300, '文字纵向越界：' + JSON.stringify(item));
+    assert.ok(item.x + measuredWidth(item.text, item.font) <= 400 + 0.5,
+      '文字横向越界：' + item.text);
+  }
+});
+
+test('上游自带的省略号断尾与未闭合【不上屏', () => {
+  const report = call('parse007Report', {
+    source: { repository: 'k-macao/007' },
+    probability: { long: 55, short: 45 },
+    topics: ['【前三季度深圳锂电池出口至200多个国家和地区',
+      "【Trump attacks Obama as 'extremely incompet…"],
+    risks: ['【QDII segregated-account products being wound down; ind…'],
+    opportunities: ["【Trump attacks Obama as 'extremely incompetent', touts…"],
+  });
+  assert.strictEqual(report.topics[0].text, '前三季度深圳锂电池出口至200多个国家和地区');
+  // 截断在引号内部：未闭合引号与悬空虚词一并去掉
+  assert.strictEqual(report.topics[1].text, 'Trump attacks Obama');
+  assert.strictEqual(report.risks[0].text, 'QDII segregated-account products being wound down');
+  assert.strictEqual(report.opportunities[0].text, "Trump attacks Obama as 'extremely incompetent'");
+
+  const card = call('buildCard', report);
+  const opts = call('sumDisplayOptions');
+  // 400×300 装得下清理后的全文：任何一栏都不能再带上游的断尾省略号。
+  // （小屏上若某栏只有一条无标点长标题，不存在更短的完整版本，
+  //  省略号仍是最后兜底，故小屏这里只断言不越界；真实 007 数据每栏多条，
+  //  总有完整的短句可选，见「三种屏幕…」用例。）
+  const ctx = createStubContext(400, 300);
+  const layout = call('drawCard', ctx, card, 400, 300, opts);
+  assert.strictEqual(layout.clean, true);
+  layout.blocks.forEach(block => {
+    assert.ok(!block.item.text.includes('…'), '400x300 出现了断尾：' + block.item.text);
+  });
+  for (const [w, h] of [[296, 128], [250, 122]]) {
+    const sctx = createStubContext(w, h);
+    call('drawCard', sctx, card, w, h, opts);
+    for (const item of sctx.texts) {
+      assert.ok(item.y >= 0 && item.y < h, '文字纵向越界：' + JSON.stringify(item));
+      assert.ok(item.x + measuredWidth(item.text, item.font) <= w + 0.5,
+        '文字横向越界：' + item.text);
+    }
+  }
+});
+
+test('内容轻的日子不压缩：全文原样上屏', () => {
+  const card = call('buildCard', call('parse007Report', {
+    source: { repository: 'k-macao/007' },
+    date: '2026-10-25', time: '09:10', edition: '早报',
+    probability: { long: 60, short: 40, label: '谨慎乐观' },
+    topics: [{ text: '锂电排产回暖', sentiment: '积极乐观', weight: 3.2 }],
+    risks: ['波动仍大'],
+    opportunities: ['逢低关注'],
+  }));
+  const opts = call('sumDisplayOptions');
+  const ctx = createStubContext(400, 300);
+  const layout = call('drawCard', ctx, card, 400, 300, opts);
+  assert.strictEqual(layout.trimmed, 0);
+  layout.blocks.forEach((block, index) => {
+    assert.strictEqual(block.item.text, card.lines[index].text);
+  });
+  assert.ok(layout.blocks[1].item.text.includes('权重3.2%'), '装得下时应保留完整标注');
+});
+
+test('completeClause 处理短来源前缀与数字时间', () => {
+  assert.strictEqual(call('completeClause', '野村：维持韩国央行3.50%终端利率预测'),
+    '维持韩国央行3.50%终端利率预测');
+  assert.strictEqual(call('completeClause', '09:30开盘走高'), '09:30开盘走高');
+});
+
 test('折行不把标点甩到行首，也不拆英文和百分比', () => {
   const ctx = createStubContext(230, 120);
   ctx.font = '16px sans-serif';
