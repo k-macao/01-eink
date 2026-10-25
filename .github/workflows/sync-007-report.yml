@@ -3,8 +3,11 @@ name: 同步 007 · 每日研报两更
 on:
   schedule:
     # GitHub cron is UTC. Macau/Hong Kong is UTC+8.
-    - cron: '10 1 * * *' # 09:10 早报
-    - cron: '10 9 * * *' # 17:10 晚报
+    # 时间紧跟 007 本体：其 market-brief 在澳门 09:00 / 17:00 发布
+    # （UTC 01:00 / 09:00，版次主题「全球市场早报/晚报」、24h 窗口）；
+    # 本同步在其后 5 分钟以相同版次主题与窗口采集，四栏内容口径一致。
+    - cron: '5 1 * * *' # 09:05 早报（007 09:00 发布后）
+    - cron: '5 9 * * *' # 17:05 晚报（007 17:00 发布后）
   workflow_dispatch:
     inputs:
       edition:
@@ -52,9 +55,9 @@ jobs:
         run: |
           if [[ "$MANUAL_EDITION" == "早报" || "$MANUAL_EDITION" == "晚报" ]]; then
             edition="$MANUAL_EDITION"
-          elif [[ "$SCHEDULE_CRON" == "10 1 * * *" ]]; then
+          elif [[ "$SCHEDULE_CRON" == "5 1 * * *" ]]; then
             edition="早报"
-          elif [[ "$SCHEDULE_CRON" == "10 9 * * *" ]]; then
+          elif [[ "$SCHEDULE_CRON" == "5 9 * * *" ]]; then
             edition="晚报"
           else
             edition="auto"

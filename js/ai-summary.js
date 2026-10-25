@@ -1,6 +1,6 @@
 // ---------- 章鱼 AI.每日研报：读取 007 → 四栏目 → 墨水屏位图 → 蓝牙推送 ----------
 //
-// 数据契约由 data/007-report.json 提供；GitHub Actions 每天澳门时间 09:10 / 17:10
+// 数据契约由 data/007-report.json 提供；GitHub Actions 每天澳门时间 09:05 / 17:05
 // 读取 k-macao/007 的采集器并更新它。页面只消费四类内容：
 //   AI 多空概率 / 热点话题 / 风险点 / 机会点。
 //
@@ -75,10 +75,15 @@ function tidyItemText(value) {
   if (value == null || value === false) return '';
   let text = cleanReportText(value);
   if (text.startsWith('【') && !text.includes('】')) text = text.slice(1).trim();
-  if (/(?:…|\.\.\.)\s*$/.test(text)) {
+  const wasEllipsized = /(?:…|\.\.\.)\s*$/.test(text);
+  if (wasEllipsized) {
     text = text.replace(/(?:…+|\.\.\.+)\s*$/, '');
-    // 被腰斩的通常是最后一个空格分词（英文残词），连同尾随分隔符一并去掉
-    if (/\s/.test(text)) text = text.replace(/\s+[^\s]+$/, '');
+    // 被腰斩的通常是最后一个空格分词（英文残词），连同尾随分隔符一并去掉；
+    // 但长中文分词是完整信息（如「…寒意 第三季度出货量骤降21%…」），不能整段误删
+    const lastToken = /\s+([^\s]+)$/.exec(text);
+    if (lastToken && (lastToken[1].length <= 6 || !/[一-鿿]/.test(lastToken[1]))) {
+      text = text.slice(0, lastToken.index);
+    }
     text = text.replace(/[\s，、；：,;:·|｜/（(]+$/, '').trim();
     // 若正好截断在引号内部（“as 'extremely…”），把未闭合的引号连同残片去掉；
     // 只认空格/行首后的引号，避免误伤 don't 这类撇号
@@ -98,6 +103,14 @@ function tidyItemText(value) {
       if (trimmed === text) break;
       text = trimmed;
     }
+  }
+  // 上面的截断处理可能把】删掉、留下一个孤【，收口前再检查一次
+  if (text.startsWith('【') && !text.includes('】')) text = text.slice(1).trim();
+  // 整条标题被【】包住、尾巴只是重复简称的残片（如「【行云科技：…亿元】行云科技近…」）：
+  // 被截断过时只取括号内的完整正文，去掉外层括号，避免与情绪标注的【】叠床架屋
+  const bracketed = /^【([^】]+)】(.*)$/.exec(text);
+  if (bracketed && (!bracketed[2] || (wasEllipsized && bracketed[2].length <= 12))) {
+    text = bracketed[1].trim();
   }
   return text;
 }
@@ -212,11 +225,18 @@ function completeClause(value) {
   const sourceColon = text.search(/[：:]/);
   const sourceClose = text.indexOf('】');
   if (text.startsWith('【') && sourceColon >= 0 && (sourceClose < 0 || sourceColon < sourceClose)) {
-    text = text.slice(sourceColon + 1).trim();
+    // 正文只取冒号后到】为止，括号外的残片尾巴不带进短句
+    text = text.slice(sourceColon + 1, sourceClose >= 0 ? sourceClose : undefined).trim();
   } else if (sourceColon > 0 && sourceColon <= 4 && !/^\d/.test(text)) {
     // 「野村：维持…」这类短来源前缀（解析时已去掉【）：正文在冒号后，
     // 短版取正文；「09:30…」这类数字开头不按来源处理
     text = text.slice(sourceColon + 1).trim();
+  }
+
+  // 【整句被括号包住的标题】…：短句取括号内正文；【快讯】这类短标签则取括号外正文
+  const bracketed = /^【([^】]+)】(.*)$/.exec(text);
+  if (bracketed) {
+    text = (bracketed[1].length <= 6 && bracketed[2] ? bracketed[2] : bracketed[1]).trim();
   }
 
   const cut = text.search(/[：:，,；;。！？!?]/);
@@ -257,13 +277,14 @@ function itemVariants(items, formatter, separator, leanFormatter) {
 function formatTopic(item) {
   let suffix = item.sentiment || '';
   if (item.weight != null) suffix += (suffix ? '·' : '') + '权重' + Number(item.weight).toFixed(1).replace(/\.0$/, '') + '%';
-  return cleanReportText(item.text) + (suffix ? '〔' + suffix + '〕' : '');
+  // 标注括号与 007 微信版栏目一致，使用【情绪档·权重%】
+  return cleanReportText(item.text) + (suffix ? '【' + suffix + '】' : '');
 }
 
 /** 压缩第一档：保留情绪档（谨慎悲观/极度恐慌…），先省掉权重数字。 */
 function formatTopicLean(item) {
   const suffix = item.sentiment || '';
-  return cleanReportText(item.text) + (suffix ? '〔' + suffix + '〕' : '');
+  return cleanReportText(item.text) + (suffix ? '【' + suffix + '】' : '');
 }
 
 /**
