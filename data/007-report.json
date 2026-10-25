@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "title": "章鱼 AI.每日研报",
-  "id": "20261025T135947+0800-d21d46fe",
-  "generated_at": "2026-10-25T13:59:47+08:00",
+  "id": "20261025T214102+0800-d21d46fe",
+  "generated_at": "2026-10-25T21:41:02+08:00",
   "date": "2026-10-25",
-  "time": "13:59",
-  "edition": "早报",
+  "time": "21:41",
+  "edition": "晚报",
   "source": {
     "repository": "k-macao/007",
     "commit": "d21d46feddbf09d6911187034bb929983eabd529",
@@ -13,69 +13,69 @@
     "analysis": "007-rule",
     "window_hours": 24
   },
-  "sample_count": 145,
+  "sample_count": 146,
   "source_count": 11,
   "probability": {
-    "long": 59,
-    "short": 41,
+    "long": 61,
+    "short": 39,
     "label": "谨慎乐观",
-    "note": "基于仓库007本轮 145 条内容 · 11 源"
+    "note": "基于仓库007本轮 146 条内容 · 11 源"
   },
   "topics": [
     {
-      "text": "【前三季度深圳锂电池出口至200多个国家和地区",
-      "sentiment": "积极乐观",
-      "weight": 5.9,
-      "theme": "锂电 / 电池",
-      "source_count": 1
-    },
-    {
-      "text": "【野村：维持韩国央行3.50%终端利率预测",
-      "sentiment": "积极乐观",
-      "weight": 5.9,
-      "theme": "利率 / 债市",
-      "source_count": 1
-    },
-    {
-      "text": "【Trump attacks Obama as 'extremely incompet…",
+      "text": "【行云科技：今年累计公告披露的算力及存储相关订单规模已达约183.16亿元】行云科技近…",
       "sentiment": "积极乐观",
       "weight": 5.5,
       "theme": "AI / 算力",
       "source_count": 1
     },
     {
-      "text": "宇树科技-W SH688836 涨跌+20.00%，关注增量 -27",
+      "text": "【内存价格飙升给PC市场带来寒意 第三季度全球出货量骤降21%】受人工智能（AI）需求…",
       "sentiment": "积极乐观",
-      "weight": 5.4,
-      "theme": "市场综合",
-      "source_count": 1
-    },
-    {
-      "text": "对冲基金创纪录抛售后，高盛建议抄底：“有选择”地配置AI，但信心不足",
-      "sentiment": "积极乐观",
-      "weight": 5.4,
+      "weight": 5.2,
       "theme": "AI / 算力",
       "source_count": 1
     },
     {
-      "text": "黄金异动下挫，突破前震仓还是新一轮调整？",
+      "text": "宇树科技-W SH688836 涨跌+20.00%，关注增量 9",
       "sentiment": "积极乐观",
-      "weight": 4.9,
+      "weight": 4.6,
       "theme": "市场综合",
+      "source_count": 1
+    },
+    {
+      "text": "【华测导航：农机导航与机器人板块前三季度实现良好增长】华测导航日前在机构调研时表示",
+      "sentiment": "积极乐观",
+      "weight": 4.4,
+      "theme": "市场综合",
+      "source_count": 1
+    },
+    {
+      "text": "马来西亚棕榈油协会（ITS）：10月1日至25日，马来西亚棕榈油出口量增长46.9%。",
+      "sentiment": "积极乐观",
+      "weight": 4.2,
+      "theme": "制造 / 出口",
+      "source_count": 1
+    },
+    {
+      "text": "金十整理：下周重要事件与数据预告——超级央行周和科技巨头财报搅动市场",
+      "sentiment": "中性观察",
+      "weight": 1.7,
+      "theme": "利率 / 债市",
       "source_count": 1
     }
   ],
   "risks": [
-    "【QDII segregated-account products being wound down; ind…",
-    "【DianKe Siyi to unveil higher‑frequency vector network…",
-    "中性样本 123/145 条，方向信号仍需后续数据确认"
+    "沙特SABIC股价下跌2.4%。",
+    "周末要闻汇总：上证指数、科创综指明起有新变化；高盛下调韩国股指目标价",
+    "中性样本 119/146 条，方向信号仍需后续数据确认"
   ],
   "opportunities": [
-    "【前三季度深圳锂电池出口至200多个国家和地区",
-    "【野村：维持韩国央行3.50%终端利率预测",
-    "【Trump attacks Obama as 'extremely incompetent', touts…",
-    "宇树科技-W SH688836 涨跌+20.00%，关注增量 -27",
-    "对冲基金创纪录抛售后，高盛建议抄底：“有选择”地配置AI，但信心不足"
+    "【行云科技：今年累计公告披露的算力及存储相关订单规模已达约183.16亿元】行云科技近日在机构调研时表示",
+    "【内存价格飙升给PC市场带来寒意 第三季度全球出货量骤降21%】受人工智能（AI）需求增长的推动",
+    "宇树科技-W SH688836 涨跌+20.00%，关注增量 9",
+    "【华测导航：农机导航与机器人板块前三季度实现良好增长】华测导航日前在机构调研时表示",
+    "马来西亚棕榈油协会（ITS）：10月1日至25日，马来西亚棕榈油出口量增长46.9%。"
   ],
   "data_gaps": [
     "市场头条源：解析成功但 48h 内无条目（结构可能已变）",
