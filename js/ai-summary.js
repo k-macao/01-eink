@@ -1,4 +1,4 @@
-// ---------- 章鱼 AI.每日研报：读取 007 → 四栏目 → 墨水屏位图 → 蓝牙推送 ----------
+// ---------- 章鱼 AI.每日研报：读取 007 → 风险/机会两栏 → 墨水屏位图 → 蓝牙推送 ----------
 //
 // 数据契约由 data/007-report.json 提供；GitHub Actions 每天澳门时间 09:05 / 17:05
 // 读取 k-macao/007 的采集器并更新它。页面只消费四类内容：
@@ -50,7 +50,7 @@ function isDeviceConnected() {
 const EpdLink = globalThis.EpdLink || (globalThis.EpdLink = { mtu: 240, rle: false, reported: false });
 let pushingSummary = false;
 
-// ---------- 007 JSON 解析与四栏目压缩 ----------
+// ---------- 007 JSON 解析与栏目压缩 ----------
 
 function cleanReportText(value) {
   return String(value == null ? '' : value)
@@ -288,16 +288,15 @@ function formatTopicLean(item) {
 }
 
 /**
- * Convert the 007 contract to exactly the four requested display columns.
+ * Convert the 007 contract to the two columns shown on the e-ink card:
+ * 风险点 / 机会点 only （按用户要求，热点话题不上屏，概率也不再单独成栏——
+ * 情绪指数已写进风险/机会的推导句）。概率与热点仍在 JSON 数据层生成和校验，
+ * 恢复显示时只需把对应行加回 lines。
  * Every line carries whole-sentence alternatives; the layout engine can move
- * to a shorter version without cutting a headline/risk in half.
+ * to a shorter version without cutting a sentence in half.
  */
 function buildCard(report) {
   if (!report) return { id: '', date: '', section: '007', lines: [] };
-  const r = report.probability;
-  const prob = '多 ' + r.long + '% · 空 ' + r.short + '%' + (r.label ? ' · ' + r.label : '');
-  const probShort = '多' + r.long + '% · 空' + r.short + '%';
-  const topicVariants = itemVariants(report.topics, formatTopic, ' · ', formatTopicLean);
   const riskVariants = itemVariants(report.risks, item => cleanReportText(item.text));
   const opportunityVariants = itemVariants(report.opportunities, item => cleanReportText(item.text));
 
@@ -307,8 +306,6 @@ function buildCard(report) {
     date: stamp,
     section: '007' + (report.edition ? ' · ' + report.edition : ''),
     lines: [
-      { label: 'AI 多空概率', text: prob, alts: uniqueVariants([prob, probShort]) },
-      { label: '热点话题', text: topicVariants[0], alts: topicVariants },
       { label: '风险点', text: riskVariants[0], alts: riskVariants },
       { label: '机会点', text: opportunityVariants[0], alts: opportunityVariants },
     ],
@@ -321,7 +318,7 @@ function buildCard(report) {
  * 固定使用随页面打包的阿里巴巴普惠体 3.0 / 55 Regular。
  * 三款支持的屏幕正文均严格使用 13px（紧凑排版，一屏装下更多完整内容）；
  * 标题、栏目标签、正文均不合成粗体。
- * 两款矮屏通过单行紧凑排版和完整短句候选保留全部四栏，而不是缩小字号。
+ * 两款矮屏通过单行紧凑排版和完整短句候选保留两栏，而不是缩小字号。
  */
 const SUM_FONTS = {
   puhui: {
@@ -622,7 +619,7 @@ function drawCard(ctx, card, w, h, opts) {
   const squeezeText = t => String(t).replace(/\s+/g, '');
 
   const totalChars = source.reduce((a, it) => a + squeezeText(it.text).length, 0) || 1;
-  // 页面显式固定字号（当前 13px）时，两款矮屏走单行紧凑承载四栏；
+  // 页面显式固定字号（当前 13px）时，两款矮屏走单行紧凑承载两栏；
   // 不写死具体字号数字，改字号规格时这里不用跟着改
   const fixedCompact = Number.isFinite(Number(opts.bodySize)) && h <= 128;
 
@@ -643,7 +640,7 @@ function drawCard(ctx, card, w, h, opts) {
    * 「尽量一屏，不够用简单压缩」排版（13px 紧凑规格）：
    *   ① 间距三档（profile）整体走紧凑：0 档行高 1.36 → 1 档 1.25 → 2 档 1.15，
    *      只压行距/块距，不缩字号；两款矮屏在 1 档起直接用单行紧凑
-   *      （122/128px 高度容纳四个 13px 区块，富余行数还可给某一栏排两行）。
+   *      （122/128px 矮屏两个栏目的单行起步，富余行数给内容较长的一栏排两行以上）。
    *   ② 每栏自带逐级更短的完整候选（候选阶梯见 itemVariants）：
    *      先按全文量行，放不下就把「当前行数最多」的一栏整栏降一档，
    *      循环到总行数能装进一屏——行数在各栏之间自然均衡，无需预先分行。
