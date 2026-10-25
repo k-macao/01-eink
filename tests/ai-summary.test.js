@@ -126,11 +126,11 @@ test('读取真实 007 JSON，并保留来源与互补多空概率', () => {
   assert.ok(report.opportunities.length >= 2);
 });
 
-test('卡片只显示附图指定的四个栏目', () => {
+test('卡片只显示风险点与机会点两栏（热点/概率不上屏）', () => {
   const card = parsedCard();
   assert.strictEqual(card.lines.map(line => line.label).join('/'),
-    'AI 多空概率/热点话题/风险点/机会点');
-  assert.strictEqual(card.lines.length, 4);
+    '风险点/机会点');
+  assert.strictEqual(card.lines.length, 2);
   assert.strictEqual(card.date, [REPORT.date, REPORT.time, REPORT.edition].join(' '));
   assert.strictEqual(card.section, '007 · ' + REPORT.edition);
   assert.ok(!card.lines.some(line => /今日盘点|明日关注|窗口摘要|AI 结论/.test(line.label)));
@@ -185,14 +185,14 @@ test('只给一边概率时自动补齐；不一致时以多头为准归一', ()
   assert.strictEqual(badSum.probability.short, 28);
 });
 
-test('三种屏幕正文都严格为 13px、不越界，且四个栏目全部保留', () => {
+test('三种屏幕正文都严格为 13px、不越界，且两个栏目全部保留', () => {
   const card = parsedCard();
   const opts = call('sumDisplayOptions');
   for (const [w, h] of [[400, 300], [296, 128], [250, 122]]) {
     const ctx = createStubContext(w, h);
     const layout = call('drawCard', ctx, card, w, h, opts);
     assert.strictEqual(layout.bodySize, 13, `${w}x${h} 必须严格使用 13px`);
-    assert.strictEqual(layout.blocks.length, 4, `${w}x${h} 应保留四栏目`);
+    assert.strictEqual(layout.blocks.length, 2, `${w}x${h} 应保留两栏目`);
     layout.blocks.forEach((block, index) => {
       assert.ok(card.lines[index].alts.includes(block.item.text),
         `${w}x${h} 的${card.lines[index].label}不是完整候选：${block.item.text}`);
@@ -207,7 +207,7 @@ test('三种屏幕正文都严格为 13px、不越界，且四个栏目全部保
   }
 });
 
-test('400×300 的四栏均使用某档完整候选，不把句子腰斩', () => {
+test('400×300 的两栏均使用某档完整候选，不把句子腰斩', () => {
   const card = parsedCard();
   const ctx = createStubContext(400, 300);
   const layout = call('drawCard', ctx, card, 400, 300, {});
@@ -250,14 +250,18 @@ function heavyPayload() {
   };
 }
 
-test('内容尽量一屏：完整四栏在 400×300 用简压缩装进一屏，无省略号且条数足量', () => {
+test('内容尽量一屏：风险/机会两栏在 400×300 装进一屏，无省略号且条数足量', () => {
   const card = call('buildCard', call('parse007Report', heavyPayload()));
   const opts = call('sumDisplayOptions');
   const ctx = createStubContext(400, 300);
   const layout = call('drawCard', ctx, card, 400, 300, opts);
 
   assert.strictEqual(layout.bodySize, 13);
-  assert.strictEqual(layout.blocks.length, 4);
+  assert.strictEqual(layout.blocks.length, 2);
+  assert.strictEqual(layout.blocks.map(b => b.item.label).join('/'), '风险点/机会点');
+  // 热点话题与 AI 多空概率不再上屏
+  assert.ok(!ctx.texts.some(t => t.text === '热点话题' || t.text === 'AI 多空概率'),
+    '不应再绘制热点/概率栏标签');
   assert.strictEqual(layout.clean, true, '应找到完整装下一屏的方案');
   assert.strictEqual(layout.hardTrimmed, 0);
   layout.blocks.forEach((block, index) => {
@@ -266,24 +270,25 @@ test('内容尽量一屏：完整四栏在 400×300 用简压缩装进一屏，�
     assert.ok(!block.item.text.includes('…'), '不应出现省略号：' + block.item.text);
   });
 
-  // 13px 紧凑排版应基本排满一屏（旧 16px 逻辑 7 行收工并腰斩内容），
-  // 且每栏保留绝大多数条目（完整短句形式）而不是只剩一条
+  // 只剩两栏后行数充裕：风险/机会应基本整栏保留（完整句），排满一屏大部
   const totalLines = layout.blocks.reduce((a, b) => a + b.wrapped.length, 0);
-  assert.ok(totalLines >= 11, '400×300 应至少排 11 行，实际 ' + totalLines);
+  assert.ok(totalLines >= 9, '400×300 两栏应至少排 9 行，实际 ' + totalLines);
   // 紧凑排版：行高倍数走紧凑档（≤1.25），不能退回 1.5 的宽松行距
   assert.ok(layout.lineH <= Math.round(13 * 1.25),
     '行高应为紧凑档，实际 lineH=' + layout.lineH);
   const hits = (text, keys) => keys.filter(k => text.includes(k)).length;
-  assert.ok(hits(layout.blocks[1].item.text, ['费半', '空头血洗', 'SOXX', '极度恐慌', '全球资金', '恒指']) >= 5,
-    '热点至少保留 5 条线索：' + layout.blocks[1].item.text);
-  assert.ok(hits(layout.blocks[2].item.text, ['流量61%', '恐慌标题', 'AI泡沫', '美债', '上轨']) >= 4,
-    '风险至少保留 4 条线索：' + layout.blocks[2].item.text);
-  assert.ok(hits(layout.blocks[3].item.text, ['情绪指数38', '极度恐慌区', '最绝望时', '逢低加码', 'AI算力']) >= 3,
-    '机会至少保留 3 条线索：' + layout.blocks[3].item.text);
-  assert.ok(layout.keptRatio >= 0.5, '保留率不应低于 50%，实际 ' + layout.keptRatio);
+  assert.ok(hits(layout.blocks[0].item.text, ['流量61%', '恐慌标题', 'AI泡沫', '美债', '上轨']) >= 4,
+    '风险至少保留 4 条线索：' + layout.blocks[0].item.text);
+  assert.ok(hits(layout.blocks[1].item.text, ['情绪指数38', '极度恐慌区', '最绝望时', '逢低加码', 'AI算力']) >= 4,
+    '机会至少保留 4 条线索：' + layout.blocks[1].item.text);
+  assert.ok(layout.keptRatio >= 0.8, '两栏保留率不应低于 80%，实际 ' + layout.keptRatio);
 
-  // 状态栏应说清是“一屏压缩”，而不是把完整短版误报成截短
-  const desc = call('describeLayout', layout, opts);
+  // 小屏必然走一屏压缩：状态栏应说清是“已压缩”，而不是把完整短版误报成截短
+  const sctx = createStubContext(296, 128);
+  const slayout = call('drawCard', sctx, card, 296, 128, opts);
+  assert.strictEqual(slayout.blocks.length, 2);
+  assert.strictEqual(slayout.hardTrimmed, 0);
+  const desc = call('describeLayout', slayout, opts);
   assert.match(desc, /已压缩（一屏完整）/);
   assert.ok(!desc.includes('已截短'), desc);
 
@@ -345,10 +350,14 @@ test('内容轻的日子不压缩：全文原样上屏', () => {
   const ctx = createStubContext(400, 300);
   const layout = call('drawCard', ctx, card, 400, 300, opts);
   assert.strictEqual(layout.trimmed, 0);
+  assert.strictEqual(layout.blocks.map(b => b.item.label).join('/'), '风险点/机会点');
   layout.blocks.forEach((block, index) => {
     assert.strictEqual(block.item.text, card.lines[index].text);
   });
-  assert.ok(layout.blocks[1].item.text.includes('权重3.2%'), '装得下时应保留完整标注');
+  // 热点标注工具函数仍保留（数据层口径不变），只是不再上屏
+  assert.strictEqual(
+    call('formatTopic', { text: '锂电排产回暖', sentiment: '积极乐观', weight: 3.2 }),
+    '锂电排产回暖【积极乐观·权重3.2%】');
 });
 
 test('completeClause 处理短来源前缀与数字时间', () => {
@@ -457,7 +466,7 @@ test('loadSummaryCard 只读取同源 data/007-report.json', async () => {
   });
   const card = await vm.runInContext('loadSummaryCard()', net.sandbox);
   assert.match(requested, /^data\/007-report\.json\?t=\d+$/);
-  assert.strictEqual(card.lines.length, 4);
+  assert.strictEqual(card.lines.length, 2);
 });
 
 test('Canvas 绘制前等待阿里巴巴普惠体 WebFont，且只加载一次', async () => {
