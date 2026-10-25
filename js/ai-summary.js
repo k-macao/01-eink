@@ -66,6 +66,42 @@ function clampText(text, maxLen) {
   return value.length > maxLen ? value.slice(0, maxLen - 1).replace(/[，、；：\s]+$/, '') + '…' : value;
 }
 
+/**
+ * 上游 007 偶尔会把标题截断成「…ind…」，或留下未闭合的来源括号「【」。
+ * 屏上不展示断尾：去掉省略标记、被切一半的末尾分词和孤括号，
+ * 让后续每一档短版候选都以读得通的完整文本为来源。
+ */
+function tidyItemText(value) {
+  if (value == null || value === false) return '';
+  let text = cleanReportText(value);
+  if (text.startsWith('【') && !text.includes('】')) text = text.slice(1).trim();
+  if (/(?:…|\.\.\.)\s*$/.test(text)) {
+    text = text.replace(/(?:…+|\.\.\.+)\s*$/, '');
+    // 被腰斩的通常是最后一个空格分词（英文残词），连同尾随分隔符一并去掉
+    if (/\s/.test(text)) text = text.replace(/\s+[^\s]+$/, '');
+    text = text.replace(/[\s，、；：,;:·|｜/（(]+$/, '').trim();
+    // 若正好截断在引号内部（“as 'extremely…”），把未闭合的引号连同残片去掉；
+    // 只认空格/行首后的引号，避免误伤 don't 这类撇号
+    const quotePairs = [["'", "'"], ['"', '"'], ['‘', '’'], ['“', '”']];
+    for (const [open, close] of quotePairs) {
+      let idx = -1;
+      for (let i = 0; i < text.length; i++) {
+        if (text[i] === open && (i === 0 || /\s/.test(text[i - 1]))) idx = i;
+      }
+      if (idx >= 0 && !text.slice(idx + 1).includes(close)) {
+        text = text.slice(0, idx).replace(/[\s，、；：,;:·|｜/（(]+$/, '').trim();
+      }
+    }
+    // 结尾悬空的英文虚词（as/to/of…）也一并去掉，句子收在实词上
+    for (let n = 0; n < 2; n++) {
+      const trimmed = text.replace(/\s+(?:as|to|of|and|or|the|a|an|in|on|for|with|by|at)$/i, '');
+      if (trimmed === text) break;
+      text = trimmed;
+    }
+  }
+  return text;
+}
+
 function percent(value, fallback) {
   if (value == null || String(value).trim() === '') return fallback;
   const n = Number(value);
@@ -115,17 +151,17 @@ function parse007Report(payload) {
   if (shortP == null || Math.abs(longP + shortP - 100) > 1) shortP = 100 - longP;
 
   const topics = reportList(raw.topics, 6, (item) => {
-    if (typeof item === 'string') return { text: item, sentiment: '', weight: null };
+    if (typeof item === 'string') return { text: tidyItemText(item), sentiment: '', weight: null };
     if (!item || typeof item !== 'object') return null;
     const weight = Number(item.weight);
     return {
-      text: item.text,
+      text: tidyItemText(item.text),
       sentiment: cleanReportText(item.sentiment),
       weight: Number.isFinite(weight) ? Math.max(0, Math.min(100, weight)) : null,
     };
   });
-  const risks = reportList(raw.risks, 5, item => ({ text: typeof item === 'string' ? item : item && item.text }));
-  const opportunities = reportList(raw.opportunities, 5, item => ({ text: typeof item === 'string' ? item : item && item.text }));
+  const risks = reportList(raw.risks, 5, item => ({ text: tidyItemText(typeof item === 'string' ? item : item && item.text) }));
+  const opportunities = reportList(raw.opportunities, 5, item => ({ text: tidyItemText(typeof item === 'string' ? item : item && item.text) }));
 
   if (!topics.length) throw new Error('007 研报缺少热点话题');
   if (!risks.length) throw new Error('007 研报缺少风险点');
@@ -177,6 +213,10 @@ function completeClause(value) {
   const sourceClose = text.indexOf('】');
   if (text.startsWith('【') && sourceColon >= 0 && (sourceClose < 0 || sourceColon < sourceClose)) {
     text = text.slice(sourceColon + 1).trim();
+  } else if (sourceColon > 0 && sourceColon <= 4 && !/^\d/.test(text)) {
+    // 「野村：维持…」这类短来源前缀（解析时已去掉【）：正文在冒号后，
+    // 短版取正文；「09:30…」这类数字开头不按来源处理
+    text = text.slice(sourceColon + 1).trim();
   }
 
   const cut = text.search(/[：:，,；;。！？!?]/);
@@ -184,21 +224,28 @@ function completeClause(value) {
   return text.replace(/^【(?=[^】]*$)/, '');
 }
 
-/** Build progressively shorter, punctuation-complete alternatives for small screens. */
-function itemVariants(items, formatter, separator) {
+/**
+ * Build progressively shorter, punctuation-complete alternatives for small screens.
+ * 简单压缩的候选阶梯（从最丰富到最短，排版引擎逐栏向下选）：
+ *   全文带标注 → 去权重留情绪档（leanFormatter）→ 纯标题 → 全部条目的完整短句
+ *   → 减条数与短句交错降档 → 单条 → 其余单条短句（窄屏可挑最短的一条）。
+ */
+function itemVariants(items, formatter, separator, leanFormatter) {
   const sep = separator || ' · ';
   const full = items.map(formatter).map(cleanReportText).filter(Boolean);
+  const lean = leanFormatter ? items.map(leanFormatter).map(cleanReportText).filter(Boolean) : [];
   const plain = items.map(item => cleanReportText(item.text)).filter(Boolean);
   const clauses = plain.map(completeClause);
   return uniqueVariants([
     full.join(sep),
+    lean.join(sep),
     plain.join(sep),
-    plain.slice(0, 4).join(sep),
-    plain.slice(0, 3).join(sep),
-    plain.slice(0, 2).join(sep),
     clauses.join(sep),
+    plain.slice(0, 4).join(sep),
     clauses.slice(0, 4).join(sep),
+    plain.slice(0, 3).join(sep),
     clauses.slice(0, 3).join(sep),
+    plain.slice(0, 2).join(sep),
     clauses.slice(0, 2).join(sep),
     plain.slice(0, 1).join(sep),
     clauses.slice(0, 1).join(sep),
@@ -213,6 +260,12 @@ function formatTopic(item) {
   return cleanReportText(item.text) + (suffix ? '〔' + suffix + '〕' : '');
 }
 
+/** 压缩第一档：保留情绪档（谨慎悲观/极度恐慌…），先省掉权重数字。 */
+function formatTopicLean(item) {
+  const suffix = item.sentiment || '';
+  return cleanReportText(item.text) + (suffix ? '〔' + suffix + '〕' : '');
+}
+
 /**
  * Convert the 007 contract to exactly the four requested display columns.
  * Every line carries whole-sentence alternatives; the layout engine can move
@@ -223,7 +276,7 @@ function buildCard(report) {
   const r = report.probability;
   const prob = '多 ' + r.long + '% · 空 ' + r.short + '%' + (r.label ? ' · ' + r.label : '');
   const probShort = '多' + r.long + '% · 空' + r.short + '%';
-  const topicVariants = itemVariants(report.topics, formatTopic);
+  const topicVariants = itemVariants(report.topics, formatTopic, ' · ', formatTopicLean);
   const riskVariants = itemVariants(report.risks, item => cleanReportText(item.text));
   const opportunityVariants = itemVariants(report.opportunities, item => cleanReportText(item.text));
 
@@ -245,7 +298,8 @@ function buildCard(report) {
 
 /**
  * 固定使用随页面打包的阿里巴巴普惠体 3.0 / 55 Regular。
- * 三款支持的屏幕正文均严格使用 16px；标题、栏目标签、正文均不合成粗体。
+ * 三款支持的屏幕正文均严格使用 13px（紧凑排版，一屏装下更多完整内容）；
+ * 标题、栏目标签、正文均不合成粗体。
  * 两款矮屏通过单行紧凑排版和完整短句候选保留全部四栏，而不是缩小字号。
  */
 const SUM_FONTS = {
@@ -257,7 +311,7 @@ const SUM_FONTS = {
 };
 
 const SUM_SIZE_SCALE = {
-  fixed16: { label: '16px', offset: 0, bodySize: 16 },
+  fixed13: { label: '13px', offset: 0, bodySize: 13 },
 };
 
 const SUM_WEB_FONT = 'Alibaba PuHuiTi 3';
@@ -270,7 +324,7 @@ function ensureSummaryFont() {
   }
   if (!sumFontLoadPromise) {
     sumFontLoadPromise = document.fonts.load(
-      '400 16px "' + SUM_WEB_FONT + '"', '章鱼研报多空热点风险机会'
+      '400 13px "' + SUM_WEB_FONT + '"', '章鱼研报多空热点风险机会'
     ).then(faces => {
       if (!faces || !faces.length) throw new Error('阿里巴巴普惠体加载失败');
       return true;
@@ -282,7 +336,7 @@ function ensureSummaryFont() {
   return sumFontLoadPromise;
 }
 
-/** 旧调用未指定固定字号时的兼容下限；页面的三款屏幕均固定使用 16px。 */
+/** 旧调用未指定固定字号时的兼容下限；页面的三款屏幕均固定使用 13px。 */
 const SUM_MIN_FONT = 10;
 
 function sumDisplayOptions() {
@@ -291,8 +345,8 @@ function sumDisplayOptions() {
   const font = SUM_FONTS[fontKey] || SUM_FONTS.puhui;
 
   const scaleEl = document.getElementById('sum-size-scale');
-  const scaleKey = (scaleEl && scaleEl.value) || 'fixed16';
-  const scaleDef = SUM_SIZE_SCALE[scaleKey] || SUM_SIZE_SCALE.fixed16;
+  const scaleKey = (scaleEl && scaleEl.value) || 'fixed13';
+  const scaleDef = SUM_SIZE_SCALE[scaleKey] || SUM_SIZE_SCALE.fixed13;
 
   return {
     fontKey: SUM_FONTS[fontKey] ? fontKey : 'puhui',
@@ -305,7 +359,7 @@ function sumDisplayOptions() {
   };
 }
 
-// ---------- 偏好记忆（字体 / 16px 固定，只记屏幕尺寸与预览倍数） ----------
+// ---------- 偏好记忆（字体 / 13px 固定，只记屏幕尺寸与预览倍数） ----------
 
 const SUM_PREF_KEYS = ['sum-size', 'sum-zoom'];
 
@@ -536,7 +590,7 @@ function drawCard(ctx, card, w, h, opts) {
   const areaHeight = areaBottom - areaTop;
 
   // 未显式传入固定字号的兼容路径仍按画布计算上下限；页面配置会在下方
-  // 直接指定 16px，不使用这套自适应上限。
+  // 直接指定 13px，不使用这套自适应上限。
   const baseBody = clamp(Math.round(h * 0.052), SUM_MIN_FONT, 22);
   const maxBody = clamp(Math.min(baseBody + 7, Math.floor(areaHeight / 5.2)), baseBody, 24);
 
@@ -547,7 +601,9 @@ function drawCard(ctx, card, w, h, opts) {
   const squeezeText = t => String(t).replace(/\s+/g, '');
 
   const totalChars = source.reduce((a, it) => a + squeezeText(it.text).length, 0) || 1;
-  const fixedCompact = Number(opts.bodySize) === 16 && h <= 128;
+  // 页面显式固定字号（当前 13px）时，两款矮屏走单行紧凑承载四栏；
+  // 不写死具体字号数字，改字号规格时这里不用跟着改
+  const fixedCompact = Number.isFinite(Number(opts.bodySize)) && h <= 128;
 
   /** 某个字号下，每条内容按可用宽度折行后的行数 */
   const measureBlock = (item, bodySize, labelSize) => {
@@ -563,85 +619,102 @@ function drawCard(ctx, card, w, h, opts) {
   };
 
   /**
-   * 按「行预算」排版：先给每条留 1 行，剩余行数按缺口比例轮流加给最需要的条目，
-   * 被截断的地方落在整行末尾（不是一刀切在字数上），页脚不会留半屏白。
+   * 「尽量一屏，不够用简单压缩」排版（13px 紧凑规格）：
+   *   ① 间距三档（profile）整体走紧凑：0 档行高 1.36 → 1 档 1.25 → 2 档 1.15，
+   *      只压行距/块距，不缩字号；两款矮屏在 1 档起直接用单行紧凑
+   *      （122/128px 高度容纳四个 13px 区块，富余行数还可给某一栏排两行）。
+   *   ② 每栏自带逐级更短的完整候选（候选阶梯见 itemVariants）：
+   *      先按全文量行，放不下就把「当前行数最多」的一栏整栏降一档，
+   *      循环到总行数能装进一屏——行数在各栏之间自然均衡，无需预先分行。
+   *   ③ 全部候选用完仍装不下时才允许省略号截尾（clean=false），
+   *      调用方会优先采用任一间距档下的 clean 方案。
    */
-  const planLayout = (bodySize, maxLinesPerItem, tighten) => {
+  const planLayout = (bodySize, maxLinesPerItem, profile) => {
     const count = source.length;
     // 标签与正文同号（同号更好认），但标签列最多占 34% 宽度；小屏才降一号
     const labelSize = Math.max(9, Math.min(bodySize, 17));
-    const lhFactor = tighten ? 1.36 : 1.5;
-    const gapFactor = tighten ? 0.24 : 0.4;
-    // 122/128px 高度可容纳四个 16px 单行区块：不降字号，只压缩行距。
-    const lineH = fixedCompact && tighten ? bodySize : Math.round(bodySize * lhFactor);
-    const blockGap = fixedCompact && tighten ? 1 : Math.max(2, Math.round(bodySize * gapFactor));
+    let lineH, blockGap;
+    if (fixedCompact && profile >= 1) {
+      lineH = bodySize;
+      blockGap = 1;
+    } else if (profile <= 0) {
+      lineH = Math.round(bodySize * 1.36);
+      blockGap = Math.max(2, Math.round(bodySize * 0.24));
+    } else if (profile === 1) {
+      lineH = Math.round(bodySize * 1.25);
+      blockGap = 2;
+    } else {
+      lineH = Math.round(bodySize * 1.15);
+      blockGap = 1;
+    }
     const capacity = Math.floor((areaHeight - blockGap * (count - 1)) / lineH);
     if (capacity < count) return null;
 
-    const measured = source.map(it => measureBlock(it, bodySize, labelSize));
-    // 需求行数一律按「完整文案」算：候选短句只在真的要截断时才启用，
-    // 不能因为「有更短的版本」就提前少给行，否则大屏也只剩半句话
-    const needs = measured.map(m => m.wrapped.length);
-    // 每条上限：既不超过自身需要，也不吃掉超过 65% 的可视高度（免得一条把别的挤没）
-    const perItemCap = Math.max(1, Math.round(capacity * 0.65));
-    const capped = needs.map(v => Math.min(v, maxLinesPerItem || perItemCap, perItemCap));
+    // 单栏行数上限：不超过可视高度的 65%，免得一栏吃掉整屏把其他栏挤没
+    const perItemCap = maxLinesPerItem > 0
+      ? Math.max(1, maxLinesPerItem)
+      : Math.max(1, Math.round(capacity * 0.65));
 
-    // 行数分配：先各 1 行，再按「还缺多少」从多到少补
-    const alloc = needs.map(() => 1);
-    let left = capacity - count;
-    while (left > 0) {
+    // 每栏的候选阶梯：量好每个候选折行后的行数，只保留「行数严格递减」的档位，
+    // 保证每降一档一定有进展；同行数的候选取排位最靠前（最丰富）的那个
+    const states = source.map(item => {
+      const m = measureBlock(item, bodySize, labelSize);
+      const variants = uniqueVariants([item.text].concat(item.alts || []));
+      const ladder = [];
+      variants.forEach(text => {
+        const wrapped = wrapLines(ctx, text, Math.max(m.bodyW, maxWidth * 0.4));
+        if (!ladder.length || wrapped.length < ladder[ladder.length - 1].wrapped.length) {
+          ladder.push({ text, wrapped });
+        }
+      });
+      let level = 0;
+      while (level < ladder.length - 1 && ladder[level].wrapped.length > perItemCap) level++;
+      return { item, m, ladder, level };
+    });
+
+    const totalLines = () => states.reduce((a, s) => a + s.ladder[s.level].wrapped.length, 0);
+    // 简单压缩：每次把行数最多的一栏降一档（同行数时先降靠后的栏，
+    // 靠前的概率/热点优先保持完整），直到总行数装进一屏
+    while (totalLines() > capacity) {
       let pick = -1;
-      for (let i = 0; i < count; i++) {
-        if (alloc[i] >= capped[i]) continue;
-        if (pick < 0 || (capped[i] - alloc[i]) > (capped[pick] - alloc[pick])) pick = i;
+      for (let i = 0; i < states.length; i++) {
+        const s = states[i];
+        if (s.level >= s.ladder.length - 1) continue;
+        if (pick < 0 || s.ladder[s.level].wrapped.length >= states[pick].ladder[states[pick].level].wrapped.length) pick = i;
       }
       if (pick < 0) break;
-      alloc[pick]++;
-      left--;
+      states[pick].level++;
     }
 
+    const clean = totalLines() <= capacity;
     const blocks = [];
+    let budget = capacity;
     for (let i = 0; i < count; i++) {
-      const m = measured[i];
-      // 折行时「 · 」会留在上一行末尾（绘制前剥掉），所以直接拼回去
-      // 就是原文前缀——不能 join('')，会把「30 天」和「60 个时间点」粘住。
-      const full = source[i].text;
-      let lines = m.wrapped.slice(0, alloc[i]);
-      let text = lines.join(' ');
-      let cut = squeezeText(text).length < squeezeText(full).length;
-
-      // 该条配了「逐级更短」的候选（窗口摘要）：优先整句换短的，
-      // 别把「10-26 五中全会」这种句尾关键信息腰斩掉
-      const alts = source[i].alts || [];
-      if (cut && alts.length) {
-        for (const alt of alts) {
-          const wrappedAlt = wrapLines(ctx, alt, m.bodyW);
-          if (wrappedAlt.length <= alloc[i]) {
-            lines = wrappedAlt;
-            text = alt;
-            cut = false;
-            break;
-          }
-        }
-      }
-
-      if (cut) {
-        // 行尾常是「话说一半」的逗号/顿号，去掉再补省略号，读起来才不像断线
-        text = text.replace(/[，、；：,;:·|｜\s]+$/, '') + '…';
-        lines = wrapLines(ctx, text, m.bodyW);
-        if (lines.length > alloc[i]) {
-          lines = lines.slice(0, alloc[i]);
+      const s = states[i];
+      let text = s.ladder[s.level].text;
+      let lines = s.ladder[s.level].wrapped.slice();
+      if (!clean) {
+        // 极端兜底：候选全部用完仍超高才截尾；每栏至少保留 1 行，
+        // 行尾的逗号/顿号先去掉再补省略号，读起来才不像断线
+        const allowed = Math.max(1, budget - (count - 1 - i));
+        if (lines.length > allowed) {
+          lines = lines.slice(0, allowed);
+          text = lines.join(' ').replace(/[，、；：,;:·|｜\s]+$/, '') + '…';
+          lines = wrapLines(ctx, text, s.m.bodyW).slice(0, allowed);
           const last = lines[lines.length - 1];
-          lines[lines.length - 1] = last.slice(0, Math.max(1, last.length - 1)) + '…';
+          if (last && !last.endsWith('…')) {
+            lines[lines.length - 1] = last.slice(0, Math.max(1, last.length - 1)) + '…';
+          }
+          text = lines.join(' ');
         }
-        text = lines.join(' ');
       }
+      budget -= lines.length;
       blocks.push({
-        item: { label: source[i].label, text: text },
-        labelW: m.labelW, labelSize, wrapped: lines, lineH, blockH: lines.length * lineH,
+        item: { label: s.item.label, text },
+        labelW: s.m.labelW, labelSize, wrapped: lines, lineH, blockH: lines.length * lineH,
       });
     }
-    return { blocks, bodySize, lineH, blockGap, totalH: blocks.reduce((a, b) => a + b.blockH, 0) + blockGap * (count - 1) };
+    return { blocks, bodySize, lineH, blockGap, clean, totalH: blocks.reduce((a, b) => a + b.blockH, 0) + blockGap * (count - 1) };
   };
 
   /**
@@ -652,36 +725,59 @@ function drawCard(ctx, card, w, h, opts) {
    *      偏移后的字号允许截短正文——所以「大」档是拿内容换字号，看得见。
    * 这样档位之间是单调的，不会出现「小」档反而比「标准」档字更大的怪事。
    */
+  // 折行时行间补的空格不能算进字数，否则截短了也算成 100%
+  const keptCharsOf = got => got.blocks.reduce((a, b) => a + squeezeText(b.item.text.replace(/…$/, '')).length, 0);
+
+  /**
+   * 某个字号下把三档紧凑行距（1.36 → 1.25 → 1.15）都试排一遍，内容优先：
+   *   ① 能完整装进一屏（clean）的方案里，选保留内容最多的——
+   *      内容重的日子会自动收紧间距多装几行，而不是只剩半栏；
+   *   ② 保留字数相同时取相对宽松的一档（先试到的先得；最松一档也是紧凑行距）；
+   *   ③ 三档都不完整时，取保留内容最多的兜底。
+   */
+  const bestPlanAt = (size) => {
+    let cleanBest = null;
+    let fallback = null;
+    for (let profile = 0; profile <= 2; profile++) {
+      const got = planLayout(size, 0, profile);
+      if (!got) continue;
+      if (got.clean) {
+        if (!cleanBest || keptCharsOf(got) > keptCharsOf(cleanBest)) cleanBest = got;
+      } else if (!fallback || keptCharsOf(got) > keptCharsOf(fallback)) {
+        fallback = got;
+      }
+    }
+    return cleanBest || fallback;
+  };
+
   const nativeSize = () => {
     let fallback = null;
     for (let size = maxBody; size >= SUM_MIN_FONT; size--) {
-      const got = planLayout(size, 0, false) || planLayout(size, 0, true);
+      const got = bestPlanAt(size);
       if (!got) continue;
-      // 折行时行间补的空格不能算进字数，否则截短了也算成 100%
-      const keptChars = got.blocks.reduce((a, b) => a + squeezeText(b.item.text.replace(/…$/, '')).length, 0);
-      got.keptRatio = keptChars / totalChars;
+      got.keptRatio = keptCharsOf(got) / totalChars;
       if (got.keptRatio >= 0.999 && got.blocks.length === source.length) return size;
       if (!fallback || got.keptRatio > fallback.ratio) fallback = { size, ratio: got.keptRatio };
     }
     return fallback ? fallback.size : SUM_MIN_FONT;
   };
 
-  // 显式配置的 16px 不再受矮屏自适应上限影响；两款矮屏由紧凑单行布局承载。
+  // 显式配置的 13px 不再受矮屏自适应上限影响；两款矮屏由紧凑单行布局承载。
   const minReadable = clamp(Math.round(h * 0.09), SUM_MIN_FONT, 14);
   const requestedSize = Number(opts.bodySize);
   const preferredSize = Number.isFinite(requestedSize) ? requestedSize : nativeSize() + offset;
   const target = Number.isFinite(requestedSize)
     ? requestedSize
     : clamp(preferredSize, minReadable, maxBody);
-  let layout = planLayout(target, 0, false) || planLayout(target, 0, true);
+  let layout = bestPlanAt(target);
   for (let size = target - 1; size >= SUM_MIN_FONT && !layout; size--) {
-    layout = planLayout(size, 0, false) || planLayout(size, 0, true);
+    layout = bestPlanAt(size);
   }
 
   // 连最小字号都排不下 → 删末条（保留靠前的结论）
   while (!layout && source.length > 1) {
     source.pop();
-    layout = planLayout(SUM_MIN_FONT, 0, true) || planLayout(SUM_MIN_FONT, 0, false);
+    layout = bestPlanAt(SUM_MIN_FONT);
   }
 
   if (!layout) {
@@ -734,6 +830,8 @@ function drawCard(ctx, card, w, h, opts) {
   layout.keptRatio = layout.blocks.reduce((a, b) => a + squeezeText(b.item.text.replace(/…$/, '')).length, 0) / totalChars;
 
   layout.trimmed = layout.blocks.filter((b, i) => !card.lines[i] || b.item.text !== card.lines[i].text).length;
+  // 区分两种“变短”：整栏换成完整短版（已压缩）与省略号截尾（已截短）
+  layout.hardTrimmed = layout.blocks.filter(b => b.item.text.endsWith('…')).length;
   layout.kept = layout.blocks.length;
   layout.total = card.lines.length;
   layout.offset = offset;
@@ -841,11 +939,12 @@ function applySumZoom(canvas) {
   return canvas;
 }
 
-/** 预览状态栏的一句话说明：字号 / 字体 / 条数 / 是否截短 */
+/** 预览状态栏的一句话说明：字号 / 字体 / 条数 / 是否为放进一屏做了压缩或截短 */
 function describeLayout(layout, opts) {
   if (!layout) return '';
   let s = layout.bodySize + 'px ' + (opts ? opts.fontLabel : '') + ' · ' + layout.kept + ' 条';
-  if (layout.trimmed > 0) s += ' · ' + layout.trimmed + ' 条已截短';
+  if (layout.hardTrimmed > 0) s += ' · ' + layout.hardTrimmed + ' 条已截短';
+  else if (layout.trimmed > 0) s += ' · ' + layout.trimmed + ' 栏已压缩（一屏完整）';
   if (layout.kept < layout.total) s += ' · 省略 ' + (layout.total - layout.kept) + ' 条';
   return s;
 }
@@ -1056,7 +1155,7 @@ function drawFontSample(ctx, w, h, opts) {
 
   const headTop = pad + titleSize + Math.round(pad * 0.4);
   ctx.font = cardFont(headSize, opts, false);
-  ctx.fillText('同句对比 · 全部非加粗 · 基准16px', pad, headTop);
+  ctx.fillText('同句对比 · 全部非加粗 · 基准13px', pad, headTop);
   const right = '挑最清楚的';
   ctx.fillText(right, w - pad - ctx.measureText(right).width, headTop);
 
@@ -1065,7 +1164,7 @@ function drawFontSample(ctx, w, h, opts) {
   ctx.fillRect(pad, ruleY, maxWidth, ruleH);
 
   const requested = Number(opts && opts.bodySize);
-  const base = Math.max(SUM_MIN_FONT, Math.min(22, Number.isFinite(requested) ? requested : 16));
+  const base = Math.max(SUM_MIN_FONT, Math.min(22, Number.isFinite(requested) ? requested : 13));
   // 样张可比较相邻字号，但所有行都保持用户指定的 Regular 字重。
   const rows = [base + 3, base, base - 3, base - 5]
     .map(size => ({ size, bold: false }))
