@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "title": "章鱼 AI.每日研报",
-  "id": "20261024T221904+0800-d21d46fe",
-  "generated_at": "2026-10-24T22:19:04+08:00",
-  "date": "2026-10-24",
-  "time": "22:19",
-  "edition": "晚报",
+  "id": "20261025T135947+0800-d21d46fe",
+  "generated_at": "2026-10-25T13:59:47+08:00",
+  "date": "2026-10-25",
+  "time": "13:59",
+  "edition": "早报",
   "source": {
     "repository": "k-macao/007",
     "commit": "d21d46feddbf09d6911187034bb929983eabd529",
@@ -13,71 +13,72 @@
     "analysis": "007-rule",
     "window_hours": 24
   },
-  "sample_count": 151,
-  "source_count": 12,
+  "sample_count": 145,
+  "source_count": 11,
   "probability": {
-    "long": 58,
-    "short": 42,
+    "long": 59,
+    "short": 41,
     "label": "谨慎乐观",
-    "note": "基于仓库007本轮 151 条内容 · 12 源"
+    "note": "基于仓库007本轮 145 条内容 · 11 源"
   },
   "topics": [
     {
-      "text": "【华福证券陈兴：A股估值已充分消化谨慎预期",
+      "text": "【前三季度深圳锂电池出口至200多个国家和地区",
       "sentiment": "积极乐观",
-      "weight": 5.6,
-      "theme": "市场综合",
+      "weight": 5.9,
+      "theme": "锂电 / 电池",
       "source_count": 1
     },
     {
-      "text": "亚马逊AI算力卖断货，订单排到2028年！",
+      "text": "【野村：维持韩国央行3.50%终端利率预测",
       "sentiment": "积极乐观",
-      "weight": 5.6,
-      "theme": "AI / 算力",
+      "weight": 5.9,
+      "theme": "利率 / 债市",
       "source_count": 1
     },
     {
-      "text": "警告“下调评级”数据中心，标普要给AI债务危机“火上浇油”",
-      "sentiment": "极度恐慌",
+      "text": "【Trump attacks Obama as 'extremely incompet…",
+      "sentiment": "积极乐观",
       "weight": 5.5,
       "theme": "AI / 算力",
       "source_count": 1
     },
     {
-      "text": "【亿纬锂能：公司四季度排产预计环比增长 产能已确定订满】亿纬锂能10月23日在电话会议…",
+      "text": "宇树科技-W SH688836 涨跌+20.00%，关注增量 -27",
       "sentiment": "积极乐观",
-      "weight": 5.2,
-      "theme": "锂电 / 电池",
-      "source_count": 1
-    },
-    {
-      "text": "宇树科技-W SH688836 涨跌+20.00%，关注增量 4",
-      "sentiment": "积极乐观",
-      "weight": 5.1,
+      "weight": 5.4,
       "theme": "市场综合",
       "source_count": 1
     },
     {
-      "text": "亿纬锂能 SZ300014 涨跌+6.08%，关注增量 -13",
+      "text": "对冲基金创纪录抛售后，高盛建议抄底：“有选择”地配置AI，但信心不足",
       "sentiment": "积极乐观",
-      "weight": 5.1,
-      "theme": "锂电 / 电池",
+      "weight": 5.4,
+      "theme": "AI / 算力",
+      "source_count": 1
+    },
+    {
+      "text": "黄金异动下挫，突破前震仓还是新一轮调整？",
+      "sentiment": "积极乐观",
+      "weight": 4.9,
+      "theme": "市场综合",
       "source_count": 1
     }
   ],
   "risks": [
-    "警告“下调评级”数据中心，标普要给AI债务危机“火上浇油”",
-    "【US allies scramble to cut dependence on SpaceX】US alli…",
-    "中性样本 129/151 条，方向信号仍需后续数据确认"
+    "【QDII segregated-account products being wound down; ind…",
+    "【DianKe Siyi to unveil higher‑frequency vector network…",
+    "中性样本 123/145 条，方向信号仍需后续数据确认"
   ],
   "opportunities": [
-    "【华福证券陈兴：A股估值已充分消化谨慎预期",
-    "亚马逊AI算力卖断货，订单排到2028年！",
-    "【亿纬锂能：公司四季度排产预计环比增长 产能已确定订满】亿纬锂能10月23日在电话会议中表示",
-    "宇树科技-W SH688836 涨跌+20.00%，关注增量 4",
-    "亿纬锂能 SZ300014 涨跌+6.08%，关注增量 -13"
+    "【前三季度深圳锂电池出口至200多个国家和地区",
+    "【野村：维持韩国央行3.50%终端利率预测",
+    "【Trump attacks Obama as 'extremely incompetent', touts…",
+    "宇树科技-W SH688836 涨跌+20.00%，关注增量 -27",
+    "对冲基金创纪录抛售后，高盛建议抄底：“有选择”地配置AI，但信心不足"
   ],
   "data_gaps": [
+    "市场头条源：解析成功但 48h 内无条目（结构可能已变）",
     "AI 智能检索：跳过（未配置检索密钥）"
   ],
   "disclaimer": "仅供研究参考，不构成投资建议"
