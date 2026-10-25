@@ -49,7 +49,7 @@ function loadModule(fetchImpl) {
   const ui = {
     'sum-size': '400x300',
     'sum-font': 'puhui',
-    'sum-size-scale': 'fixed16',
+    'sum-size-scale': 'fixed13',
     'sum-zoom': '1',
   };
   const elements = new Map();
@@ -62,7 +62,7 @@ function loadModule(fetchImpl) {
       disabled: null,
       style: {},
       textContent: '',
-      options: ['400x300', '296x128', '250x122', 'puhui', 'fixed16', '1', '2', '3']
+      options: ['400x300', '296x128', '250x122', 'puhui', 'fixed13', '1', '2', '3']
         .map(value => ({ value })),
       addEventListener() {},
       getContext() { return createStubContext(400, 300); },
@@ -185,13 +185,13 @@ test('只给一边概率时自动补齐；不一致时以多头为准归一', ()
   assert.strictEqual(badSum.probability.short, 28);
 });
 
-test('三种屏幕正文都严格为 16px、不越界，且四个栏目全部保留', () => {
+test('三种屏幕正文都严格为 13px、不越界，且四个栏目全部保留', () => {
   const card = parsedCard();
   const opts = call('sumDisplayOptions');
   for (const [w, h] of [[400, 300], [296, 128], [250, 122]]) {
     const ctx = createStubContext(w, h);
     const layout = call('drawCard', ctx, card, w, h, opts);
-    assert.strictEqual(layout.bodySize, 16, `${w}x${h} 必须严格使用 16px`);
+    assert.strictEqual(layout.bodySize, 13, `${w}x${h} 必须严格使用 13px`);
     assert.strictEqual(layout.blocks.length, 4, `${w}x${h} 应保留四栏目`);
     layout.blocks.forEach((block, index) => {
       assert.ok(card.lines[index].alts.includes(block.item.text),
@@ -256,7 +256,7 @@ test('内容尽量一屏：完整四栏在 400×300 用简压缩装进一屏，�
   const ctx = createStubContext(400, 300);
   const layout = call('drawCard', ctx, card, 400, 300, opts);
 
-  assert.strictEqual(layout.bodySize, 16);
+  assert.strictEqual(layout.bodySize, 13);
   assert.strictEqual(layout.blocks.length, 4);
   assert.strictEqual(layout.clean, true, '应找到完整装下一屏的方案');
   assert.strictEqual(layout.hardTrimmed, 0);
@@ -266,17 +266,21 @@ test('内容尽量一屏：完整四栏在 400×300 用简压缩装进一屏，�
     assert.ok(!block.item.text.includes('…'), '不应出现省略号：' + block.item.text);
   });
 
-  // 用满一屏（旧逻辑 7 行收工并腰斩内容），且每栏保留多条信息而不是只剩一条
+  // 13px 紧凑排版应基本排满一屏（旧 16px 逻辑 7 行收工并腰斩内容），
+  // 且每栏保留绝大多数条目（完整短句形式）而不是只剩一条
   const totalLines = layout.blocks.reduce((a, b) => a + b.wrapped.length, 0);
-  assert.ok(totalLines >= 8, '400×300 应至少排 8 行，实际 ' + totalLines);
+  assert.ok(totalLines >= 11, '400×300 应至少排 11 行，实际 ' + totalLines);
+  // 紧凑排版：行高倍数走紧凑档（≤1.25），不能退回 1.5 的宽松行距
+  assert.ok(layout.lineH <= Math.round(13 * 1.25),
+    '行高应为紧凑档，实际 lineH=' + layout.lineH);
   const hits = (text, keys) => keys.filter(k => text.includes(k)).length;
-  assert.ok(hits(layout.blocks[1].item.text, ['费半', '空头血洗', 'SOXX', '极度恐慌', '全球资金', '恒指']) >= 3,
-    '热点至少保留 3 条线索：' + layout.blocks[1].item.text);
-  assert.ok(hits(layout.blocks[2].item.text, ['流量61%', '恐慌标题', 'AI泡沫', '美债', '上轨']) >= 2,
-    '风险至少保留 2 条线索：' + layout.blocks[2].item.text);
-  assert.ok(hits(layout.blocks[3].item.text, ['情绪指数38', '极度恐慌区', '最绝望时', '逢低加码', 'AI算力']) >= 2,
-    '机会至少保留 2 条线索：' + layout.blocks[3].item.text);
-  assert.ok(layout.keptRatio >= 0.25, '保留率不应低于 25%，实际 ' + layout.keptRatio);
+  assert.ok(hits(layout.blocks[1].item.text, ['费半', '空头血洗', 'SOXX', '极度恐慌', '全球资金', '恒指']) >= 5,
+    '热点至少保留 5 条线索：' + layout.blocks[1].item.text);
+  assert.ok(hits(layout.blocks[2].item.text, ['流量61%', '恐慌标题', 'AI泡沫', '美债', '上轨']) >= 4,
+    '风险至少保留 4 条线索：' + layout.blocks[2].item.text);
+  assert.ok(hits(layout.blocks[3].item.text, ['情绪指数38', '极度恐慌区', '最绝望时', '逢低加码', 'AI算力']) >= 3,
+    '机会至少保留 3 条线索：' + layout.blocks[3].item.text);
+  assert.ok(layout.keptRatio >= 0.5, '保留率不应低于 50%，实际 ' + layout.keptRatio);
 
   // 状态栏应说清是“一屏压缩”，而不是把完整短版误报成截短
   const desc = call('describeLayout', layout, opts);
@@ -378,22 +382,22 @@ test('页面自托管阿里巴巴普惠体 Regular，并锁定字体与字号控
   assert.match(MAIN_CSS, /AlibabaPuHuiTi-3-55-Regular\.woff2/);
   assert.match(INDEX_HTML, /rel="preload"[^>]*AlibabaPuHuiTi-3-55-Regular\.woff2[^>]*as="font"/);
   assert.match(INDEX_HTML, /id="sum-font" disabled[^>]*>[\s\S]*value="puhui" selected/);
-  assert.match(INDEX_HTML, /id="sum-size-scale" disabled[^>]*>[\s\S]*value="fixed16" selected>16px/);
+  assert.match(INDEX_HTML, /id="sum-size-scale" disabled[^>]*>[\s\S]*value="fixed13" selected>13px/);
 });
 
-test('默认严格使用阿里巴巴普惠体、三款屏幕正文 16px、非加粗', () => {
+test('默认严格使用阿里巴巴普惠体、三款屏幕正文 13px、非加粗', () => {
   const card = parsedCard();
   const opts = call('sumDisplayOptions');
   assert.strictEqual(opts.fontKey, 'puhui');
   assert.strictEqual(opts.fontLabel, '阿里巴巴普惠体 · 非加粗');
-  assert.strictEqual(opts.bodySize, 16);
+  assert.strictEqual(opts.bodySize, 13);
   assert.strictEqual(opts.boldBody, false);
-  assert.match(call('cardFont', 16, opts, true), /^400 16px .*Alibaba PuHuiTi 3/);
-  assert.ok(!call('cardFont', 16, opts, true).includes('bold'));
+  assert.match(call('cardFont', 13, opts, true), /^400 13px .*Alibaba PuHuiTi 3/);
+  assert.ok(!call('cardFont', 13, opts, true).includes('bold'));
 
   const ctx = createStubContext(400, 300);
   const layout = call('drawCard', ctx, card, 400, 300, opts);
-  assert.strictEqual(layout.bodySize, 16);
+  assert.strictEqual(layout.bodySize, 13);
   assert.ok(ctx.texts.every(item => !item.font.includes('bold')));
   assert.ok(ctx.texts.every(item => item.font.includes('Alibaba PuHuiTi 3')));
 });
@@ -436,13 +440,13 @@ test('字体样张能画满且不越界', () => {
   }
 });
 
-test('旧字体偏好不能覆盖固定的普惠体 16px 配置', () => {
+test('旧字体偏好不能覆盖固定的普惠体 13px 配置', () => {
   const fresh = loadModule();
   fresh.store['epd.sum-font'] = 'mono';
   fresh.store['epd.sum-size-scale'] = 'large';
   vm.runInContext('restoreSumPrefs()', fresh.sandbox);
   assert.strictEqual(fresh.makeElement('sum-font').value, 'puhui');
-  assert.strictEqual(fresh.makeElement('sum-size-scale').value, 'fixed16');
+  assert.strictEqual(fresh.makeElement('sum-size-scale').value, 'fixed13');
 });
 
 test('loadSummaryCard 只读取同源 data/007-report.json', async () => {
@@ -461,7 +465,7 @@ test('Canvas 绘制前等待阿里巴巴普惠体 WebFont，且只加载一次',
   await vm.runInContext('ensureSummaryFont()', fresh.sandbox);
   await vm.runInContext('ensureSummaryFont()', fresh.sandbox);
   assert.strictEqual(fresh.fontRequests.length, 1);
-  assert.match(fresh.fontRequests[0][0], /^400 16px "Alibaba PuHuiTi 3"$/);
+  assert.match(fresh.fontRequests[0][0], /^400 13px "Alibaba PuHuiTi 3"$/);
   assert.match(fresh.fontRequests[0][1], /章鱼研报/);
 });
 

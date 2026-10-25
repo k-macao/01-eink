@@ -298,7 +298,8 @@ function buildCard(report) {
 
 /**
  * 固定使用随页面打包的阿里巴巴普惠体 3.0 / 55 Regular。
- * 三款支持的屏幕正文均严格使用 16px；标题、栏目标签、正文均不合成粗体。
+ * 三款支持的屏幕正文均严格使用 13px（紧凑排版，一屏装下更多完整内容）；
+ * 标题、栏目标签、正文均不合成粗体。
  * 两款矮屏通过单行紧凑排版和完整短句候选保留全部四栏，而不是缩小字号。
  */
 const SUM_FONTS = {
@@ -310,7 +311,7 @@ const SUM_FONTS = {
 };
 
 const SUM_SIZE_SCALE = {
-  fixed16: { label: '16px', offset: 0, bodySize: 16 },
+  fixed13: { label: '13px', offset: 0, bodySize: 13 },
 };
 
 const SUM_WEB_FONT = 'Alibaba PuHuiTi 3';
@@ -323,7 +324,7 @@ function ensureSummaryFont() {
   }
   if (!sumFontLoadPromise) {
     sumFontLoadPromise = document.fonts.load(
-      '400 16px "' + SUM_WEB_FONT + '"', '章鱼研报多空热点风险机会'
+      '400 13px "' + SUM_WEB_FONT + '"', '章鱼研报多空热点风险机会'
     ).then(faces => {
       if (!faces || !faces.length) throw new Error('阿里巴巴普惠体加载失败');
       return true;
@@ -335,7 +336,7 @@ function ensureSummaryFont() {
   return sumFontLoadPromise;
 }
 
-/** 旧调用未指定固定字号时的兼容下限；页面的三款屏幕均固定使用 16px。 */
+/** 旧调用未指定固定字号时的兼容下限；页面的三款屏幕均固定使用 13px。 */
 const SUM_MIN_FONT = 10;
 
 function sumDisplayOptions() {
@@ -344,8 +345,8 @@ function sumDisplayOptions() {
   const font = SUM_FONTS[fontKey] || SUM_FONTS.puhui;
 
   const scaleEl = document.getElementById('sum-size-scale');
-  const scaleKey = (scaleEl && scaleEl.value) || 'fixed16';
-  const scaleDef = SUM_SIZE_SCALE[scaleKey] || SUM_SIZE_SCALE.fixed16;
+  const scaleKey = (scaleEl && scaleEl.value) || 'fixed13';
+  const scaleDef = SUM_SIZE_SCALE[scaleKey] || SUM_SIZE_SCALE.fixed13;
 
   return {
     fontKey: SUM_FONTS[fontKey] ? fontKey : 'puhui',
@@ -358,7 +359,7 @@ function sumDisplayOptions() {
   };
 }
 
-// ---------- 偏好记忆（字体 / 16px 固定，只记屏幕尺寸与预览倍数） ----------
+// ---------- 偏好记忆（字体 / 13px 固定，只记屏幕尺寸与预览倍数） ----------
 
 const SUM_PREF_KEYS = ['sum-size', 'sum-zoom'];
 
@@ -589,7 +590,7 @@ function drawCard(ctx, card, w, h, opts) {
   const areaHeight = areaBottom - areaTop;
 
   // 未显式传入固定字号的兼容路径仍按画布计算上下限；页面配置会在下方
-  // 直接指定 16px，不使用这套自适应上限。
+  // 直接指定 13px，不使用这套自适应上限。
   const baseBody = clamp(Math.round(h * 0.052), SUM_MIN_FONT, 22);
   const maxBody = clamp(Math.min(baseBody + 7, Math.floor(areaHeight / 5.2)), baseBody, 24);
 
@@ -600,7 +601,9 @@ function drawCard(ctx, card, w, h, opts) {
   const squeezeText = t => String(t).replace(/\s+/g, '');
 
   const totalChars = source.reduce((a, it) => a + squeezeText(it.text).length, 0) || 1;
-  const fixedCompact = Number(opts.bodySize) === 16 && h <= 128;
+  // 页面显式固定字号（当前 13px）时，两款矮屏走单行紧凑承载四栏；
+  // 不写死具体字号数字，改字号规格时这里不用跟着改
+  const fixedCompact = Number.isFinite(Number(opts.bodySize)) && h <= 128;
 
   /** 某个字号下，每条内容按可用宽度折行后的行数 */
   const measureBlock = (item, bodySize, labelSize) => {
@@ -616,9 +619,10 @@ function drawCard(ctx, card, w, h, opts) {
   };
 
   /**
-   * 「尽量一屏，不够用简单压缩」排版：
-   *   ① 间距三档（profile）：0 宽松 → 1 紧 → 2 紧凑，只压行距/块距，不缩字号；
-   *      两款矮屏在 1 档起直接用单行紧凑（122/128px 容纳四个 16px 区块）。
+   * 「尽量一屏，不够用简单压缩」排版（13px 紧凑规格）：
+   *   ① 间距三档（profile）整体走紧凑：0 档行高 1.36 → 1 档 1.25 → 2 档 1.15，
+   *      只压行距/块距，不缩字号；两款矮屏在 1 档起直接用单行紧凑
+   *      （122/128px 高度容纳四个 13px 区块，富余行数还可给某一栏排两行）。
    *   ② 每栏自带逐级更短的完整候选（候选阶梯见 itemVariants）：
    *      先按全文量行，放不下就把「当前行数最多」的一栏整栏降一档，
    *      循环到总行数能装进一屏——行数在各栏之间自然均衡，无需预先分行。
@@ -634,14 +638,14 @@ function drawCard(ctx, card, w, h, opts) {
       lineH = bodySize;
       blockGap = 1;
     } else if (profile <= 0) {
-      lineH = Math.round(bodySize * 1.5);
-      blockGap = Math.max(2, Math.round(bodySize * 0.4));
-    } else if (profile === 1) {
       lineH = Math.round(bodySize * 1.36);
       blockGap = Math.max(2, Math.round(bodySize * 0.24));
-    } else {
+    } else if (profile === 1) {
       lineH = Math.round(bodySize * 1.25);
       blockGap = 2;
+    } else {
+      lineH = Math.round(bodySize * 1.15);
+      blockGap = 1;
     }
     const capacity = Math.floor((areaHeight - blockGap * (count - 1)) / lineH);
     if (capacity < count) return null;
@@ -725,10 +729,10 @@ function drawCard(ctx, card, w, h, opts) {
   const keptCharsOf = got => got.blocks.reduce((a, b) => a + squeezeText(b.item.text.replace(/…$/, '')).length, 0);
 
   /**
-   * 某个字号下把间距三档「宽松 → 紧 → 紧凑」都试排一遍，内容优先：
+   * 某个字号下把三档紧凑行距（1.36 → 1.25 → 1.15）都试排一遍，内容优先：
    *   ① 能完整装进一屏（clean）的方案里，选保留内容最多的——
-   *      内容重的日子会自动收紧间距多装两行，而不是宽松地只剩半栏；
-   *   ② 保留字数相同时取更宽松的间距（先试到的先得），内容轻时排得舒展；
+   *      内容重的日子会自动收紧间距多装几行，而不是只剩半栏；
+   *   ② 保留字数相同时取相对宽松的一档（先试到的先得；最松一档也是紧凑行距）；
    *   ③ 三档都不完整时，取保留内容最多的兜底。
    */
   const bestPlanAt = (size) => {
@@ -758,7 +762,7 @@ function drawCard(ctx, card, w, h, opts) {
     return fallback ? fallback.size : SUM_MIN_FONT;
   };
 
-  // 显式配置的 16px 不再受矮屏自适应上限影响；两款矮屏由紧凑单行布局承载。
+  // 显式配置的 13px 不再受矮屏自适应上限影响；两款矮屏由紧凑单行布局承载。
   const minReadable = clamp(Math.round(h * 0.09), SUM_MIN_FONT, 14);
   const requestedSize = Number(opts.bodySize);
   const preferredSize = Number.isFinite(requestedSize) ? requestedSize : nativeSize() + offset;
@@ -1151,7 +1155,7 @@ function drawFontSample(ctx, w, h, opts) {
 
   const headTop = pad + titleSize + Math.round(pad * 0.4);
   ctx.font = cardFont(headSize, opts, false);
-  ctx.fillText('同句对比 · 全部非加粗 · 基准16px', pad, headTop);
+  ctx.fillText('同句对比 · 全部非加粗 · 基准13px', pad, headTop);
   const right = '挑最清楚的';
   ctx.fillText(right, w - pad - ctx.measureText(right).width, headTop);
 
@@ -1160,7 +1164,7 @@ function drawFontSample(ctx, w, h, opts) {
   ctx.fillRect(pad, ruleY, maxWidth, ruleH);
 
   const requested = Number(opts && opts.bodySize);
-  const base = Math.max(SUM_MIN_FONT, Math.min(22, Number.isFinite(requested) ? requested : 16));
+  const base = Math.max(SUM_MIN_FONT, Math.min(22, Number.isFinite(requested) ? requested : 13));
   // 样张可比较相邻字号，但所有行都保持用户指定的 Regular 字重。
   const rows = [base + 3, base, base - 3, base - 5]
     .map(size => ({ size, bold: false }))
