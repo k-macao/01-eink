@@ -136,5 +136,87 @@ class Sync007ReportTests(unittest.TestCase):
             self.assertNotIn("\\u7ae0", out.read_text(encoding="utf-8"))
 
 
+def bearish_snapshot():
+    """空头日快照：与 007 微信版截图同构（指数 36、极端标题、避险与逆向信号）。"""
+    def item(source, title, score, conf=0.8, age=1):
+        return {"source": source, "title": title, "score": score,
+                "label": "利好" if score > 0.12 else "利空" if score < -0.12 else "中性",
+                "conf": conf, "age_h": age}
+    return {
+        "agg": {"n": 50, "n_sources": 11, "pos": 8, "neg": 30, "neu": 12,
+                "mean": -0.1, "综合多头概率锚点": 36},
+        "items": [
+            item("A", "费半狂泻近7%、台积电ADR跌超4.5%", -1.0, 0.95),
+            item("B", "恒指全周跌1093点、北水连续8日流出", -0.8, 0.9, 2),
+            item("C", "一下子跌入极度恐慌，半导体还能拿吗", -0.9, 0.85, 3),
+            item("D", "今日血亏6000、美股再次大跌", -0.5, 0.8, 1),
+            item("E", "半导体SOXX成分股全线下挫", -0.6, 0.85, 2),
+            item("F", "对冲基金连续减仓、下周注意QQQ", -0.4, 0.7, 4),
+            item("G", "全球资金大逃亡、AI泡沫要破?", -0.85, 0.8, 5),
+            item("H", "美债息急跌、日元急升避险升温", -0.5, 0.75, 2),
+            item("I", "黄金再创新高，资金涌入避险", -0.3, 0.7, 6),
+            item("J", "AI算力订单仍旺、云厂商资本开支上修", 0.7, 0.8, 3),
+            item("K", "最绝望时买入将来最赚？历史复盘", 0.4, 0.6, 7),
+            item("L", "下跌时如何检视资产配置与安全边际", 0.2, 0.5, 8),
+            item("M", "人民币汇率双向波动", 0.0, 0.0, 9),
+        ],
+        "errors": [],
+        "_source_commit": "abc123",
+    }
+
+
+class ColumnLogicTests(unittest.TestCase):
+    def test_stance_label_uses_five_tiers(self):
+        cases = {82: "积极乐观", 70: "积极乐观", 60: "谨慎乐观", 55: "谨慎乐观",
+                 50: "中性观察", 46: "中性观察", 45: "谨慎悲观", 38: "谨慎悲观",
+                 31: "谨慎悲观", 30: "极度恐慌", 12: "极度恐慌"}
+        for value, expected in cases.items():
+            self.assertEqual(SYNC._stance_label(value), expected, value)
+
+    def test_bearish_day_columns_follow_007_page_logic(self):
+        snap = bearish_snapshot()
+        report = SYNC.build_report(
+            snap, now=datetime(2026, 10, 25, 17, 5, tzinfo=HKT), edition="晚报")
+        self.assertEqual(report["probability"]["long"], 36)
+        self.assertEqual(report["probability"]["label"], "谨慎悲观")
+        self.assertEqual(report["probability"]["note"], "基于 50 条内容 · 007本地情绪模型")
+
+        risks, ops = report["risks"], report["opportunities"]
+        # 风险/机会是统计推导的分析句，且数字全部来自快照
+        self.assertIn("档占流量", risks[0])
+        self.assertTrue(any("极度恐慌标题已现（4条）" in x for x in risks), risks)
+        self.assertEqual(ops[0], "情绪指数距下轨25仅差11点，若触及极度恐慌可寻找左侧买点")
+        # 不再把原始标题逐条回声当作风险/机会
+        raw_titles = {SYNC._clip(row["title"], 56) for row in snap["items"]}
+        for line in risks + ops:
+            self.assertNotIn(line, raw_titles)
+        self.assertGreaterEqual(len(risks), 4)
+        self.assertGreaterEqual(len(ops), 4)
+
+    def test_topic_weights_are_total_traffic_share_sorted_desc(self):
+        report = SYNC.build_report(
+            bearish_snapshot(), now=datetime(2026, 10, 25, 17, 5, tzinfo=HKT))
+        weights = [t["weight"] for t in report["topics"]]
+        self.assertEqual(weights, sorted(weights, reverse=True))
+        self.assertLessEqual(sum(weights), 100.0)
+        self.assertTrue(all(0 < w <= 100 for w in weights))
+        for t in report["topics"]:
+            self.assertIn(t["sentiment"], SYNC.SENTIMENT_TIERS)
+
+    def test_session_topic_follows_007_market_brief(self):
+        self.assertEqual(SYNC._session_topic("早报"), "全球市场早报")
+        self.assertEqual(SYNC._session_topic("晚报"), "全球市场晚报")
+        self.assertEqual(SYNC._session_topic("其它"), "全球市场每日研报")
+
+    def test_ai_sentiment_must_be_one_of_five_tiers(self):
+        parsed = SYNC._valid_ai_columns({
+            "topics": [{"text": "AI算力订单", "sentiment": "非常看多", "weight": 5}],
+            "risks": ["波动风险"],
+            "opportunities": ["订单线索"],
+        })
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed[0][0]["sentiment"], "中性观察")
+
+
 if __name__ == "__main__":
     unittest.main()

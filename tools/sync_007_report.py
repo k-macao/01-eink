@@ -6,6 +6,16 @@ sentiment model.  This adapter deliberately does not copy those collectors:
 it imports a fresh checkout of 007, runs ``collect_feeds`` and writes the small,
 stable JSON contract consumed by this repository's static page.
 
+Column logic mirrors 007's own published brief (the DOS-themed WeChat page):
+AI 多空概率 is the 007 sentiment anchor read as an index with 中枢 50 /
+下轨 25 / 上轨 75; 热点话题 carry 【情绪档·权重%】 where the weight is the
+item's share of total collected traffic; 风险点 / 机会点 are analytical
+lines derived from tier traffic shares, extreme-headline counts, theme
+concentration and the index's distance to the rails — never raw headline
+echoes, and every number comes from the same 007 snapshot.  Timing follows
+007's market-brief sessions (Macau 09:00 / 17:00, topics 全球市场早报 /
+全球市场晚报, 24h window); this repo's workflow runs minutes behind them.
+
 A CI run first saves a raw snapshot without any repository token or AI secret,
 then this trusted adapter optionally sends only that snapshot's facts to
 DeepSeek. Missing/failed AI is not fatal: the deterministic reducer still
@@ -32,6 +42,18 @@ HKT = timezone(timedelta(hours=8), "Asia/Macau")
 TITLE = "章鱼 AI.每日研报"
 SCHEMA_VERSION = 1
 
+# 栏目逻辑与 007 发布的微信版（DOS 主题）保持一致：情绪指数即 007 的
+# 综合多头概率锚点；中枢 50，下轨 25（≤25 极度恐慌区），上轨 75（≥75 极度贪婪区）。
+CENTER = 50
+RAIL_LOW = 25
+RAIL_HIGH = 75
+SENTIMENT_TIERS = ("积极乐观", "谨慎乐观", "中性观察", "谨慎悲观", "极度恐慌")
+NEGATIVE_TIERS = ("谨慎悲观", "极度恐慌")
+POSITIVE_TIERS = ("积极乐观", "谨慎乐观")
+
+# 与 007 market-brief 相同的版次主题：采集时刻、窗口与口径紧跟 007 本体。
+SESSION_TOPICS = {"早报": "全球市场早报", "晚报": "全球市场晚报"}
+
 MARKET_WORDS = (
     "a股", "港股", "美股", "恒指", "恒生", "标普", "纳指", "道指", "日经",
     "股价", "股票", "指数", "市场", "资金", "成交", "基金", "券商", "银行",
@@ -55,6 +77,11 @@ THEMES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("航运 / 交运", ("航运", "运价", "航空", "交运", "港口")),
     ("地缘 / 政策", ("冲突", "战争", "制裁", "关税", "监管", "政策", "地缘")),
 )
+
+# 风险点 / 机会点的分析句只引用快照里真实出现的信号词，不引入外部判断。
+HAVEN_WORDS = ("黄金", "金价", "美债", "国债", "债息", "日元", "油价", "原油", "避险")
+ALLOCATION_WORDS = ("配置", "避风港", "防御", "检视", "安全边际", "价值投资", "高股息", "分红", "长期视角")
+CONTRARIAN_WORDS = ("抄底", "逢低", "左侧", "最绝望", "错杀", "买入机会", "起涨", "甜甜价")
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 MARKDOWN_RE = re.compile(r"[*_`#>]|\x00")
@@ -176,58 +203,186 @@ def _diverse(items: list[dict[str, Any]], count: int) -> list[dict[str, Any]]:
     return selected
 
 
+def _traffic(row: dict[str, Any]) -> float:
+    """One item's share-of-voice weight inside this round's collection."""
+    return max(0.15, float(row.get("rank") or 0))
+
+
 def _topic_rows(items: list[dict[str, Any]], count: int = 6) -> list[dict[str, Any]]:
     candidates = [row for row in items if _market_hits(row["title"]) > 0]
     if len(candidates) < count:
         candidates = items
     picked = _diverse(candidates, count)
-    denominator = sum(max(0.15, row.get("rank", 0)) for row in candidates) or 1
-    return [{
+    # 权重口径与 007 微信版一致：该条在本轮全部采集流量中的占比（%），按权重降序。
+    denominator = sum(_traffic(row) for row in items) or 1
+    rows = [{
         "text": _clip(row["title"], 44),
         "sentiment": _sentiment(float(row.get("score") or 0)),
-        "weight": round(max(0.15, row.get("rank", 0)) / denominator * 100, 1),
+        "weight": round(_traffic(row) / denominator * 100, 1),
         "theme": row.get("theme") or _theme(row["title"]),
         "source_count": int(row.get("source_count") or 1),
     } for row in picked]
+    return sorted(rows, key=lambda row: row["weight"], reverse=True)
 
 
-def _directional_lines(items: list[dict[str, Any]], positive: bool,
-                       limit: int = 5) -> list[str]:
-    sign = (lambda x: float(x.get("score") or 0) > 0.12) if positive \
-        else (lambda x: float(x.get("score") or 0) < -0.12)
-    candidates = [row for row in items if sign(row) and _market_hits(row["title"]) > 0]
-    picked = _diverse(candidates, limit)
-    return [_clip(row["title"], 56) for row in picked]
+def _stance_label(long_p: int) -> str:
+    """Overall stance word for the sentiment index (007 five-tier vocabulary)."""
+    if long_p >= 70:
+        return "积极乐观"
+    if long_p >= 55:
+        return "谨慎乐观"
+    if long_p > 45:
+        return "中性观察"
+    if long_p > 30:
+        return "谨慎悲观"
+    return "极度恐慌"
+
+
+def _pct(part: float, total: float) -> int:
+    return int(round(part / total * 100)) if total else 0
+
+
+def _column_stats(items: list[dict[str, Any]], long_p: int) -> dict[str, Any]:
+    """All numbers quoted by the analytical risk/opportunity lines.
+
+    Everything is counted from the same deduped 007 items, so the card can
+    never state a figure the source snapshot does not support.
+    """
+    total = sum(_traffic(row) for row in items) or 1.0
+    tier_share: dict[str, float] = defaultdict(float)
+    tier_count: Counter[str] = Counter()
+    theme_share: dict[str, float] = defaultdict(float)
+    pos_theme_share: dict[str, float] = defaultdict(float)
+    signals: dict[str, list[str]] = {"haven": [], "allocation": [], "contrarian": []}
+    for row in items:
+        title = str(row.get("title") or "")
+        score = float(row.get("score") or 0)
+        tier = _sentiment(score)
+        tier_share[tier] += _traffic(row)
+        tier_count[tier] += 1
+        theme = _theme(title)
+        theme_share[theme] += _traffic(row)
+        if score > 0.12:
+            pos_theme_share[theme] += _traffic(row)
+        for key, words in (("haven", HAVEN_WORDS), ("allocation", ALLOCATION_WORDS),
+                           ("contrarian", CONTRARIAN_WORDS)):
+            hit = next((w for w in words if w in title), "")
+            if hit:
+                signals[key].append(hit)
+    dom_neg_tier = max(NEGATIVE_TIERS, key=lambda t: tier_share[t])
+    top_theme = max((t for t in theme_share if t != "市场综合"),
+                    key=lambda t: theme_share[t], default="")
+    top_pos_theme = max((t for t in pos_theme_share if t != "市场综合"),
+                        key=lambda t: pos_theme_share[t], default="")
+    return {
+        "index": long_p,
+        "n": len(items),
+        "tier_share": {t: _pct(v, total) for t, v in tier_share.items()},
+        "tier_count": dict(tier_count),
+        "neg_share": _pct(sum(tier_share[t] for t in NEGATIVE_TIERS), total),
+        "pos_share": _pct(sum(tier_share[t] for t in POSITIVE_TIERS), total),
+        "dom_neg_tier": dom_neg_tier,
+        "dom_neg_tier_share": _pct(tier_share[dom_neg_tier], total),
+        "extreme_count": int(tier_count.get("极度恐慌", 0)),
+        "top_theme": top_theme,
+        "top_theme_share": _pct(theme_share[top_theme], total) if top_theme else 0,
+        "top_pos_theme": top_pos_theme,
+        "top_pos_theme_share": _pct(pos_theme_share[top_pos_theme], total) if top_pos_theme else 0,
+        "signals": {k: {"count": len(v), "words": list(dict.fromkeys(v))[:3]}
+                    for k, v in signals.items()},
+    }
+
+
+def _theme_short(theme: str) -> str:
+    return theme.replace(" / ", "/").replace(" ", "")
+
+
+def _risk_lines(stats: dict[str, Any], agg: dict[str, Any]) -> list[str]:
+    """风险点：按微信版栏目逻辑由情绪分布推导，每条只引用快照内的真实数字。"""
+    idx = int(stats["index"])
+    lines: list[str] = []
+    # ① 主导悲观面：单档或悲观合计的流量占比 + 指数相对中枢的位置
+    if stats["dom_neg_tier_share"] >= 40:
+        lines.append(f"{stats['dom_neg_tier']}档占流量{stats['dom_neg_tier_share']}%，"
+                     "悲观叙事主导易形成自我强化")
+    elif stats["neg_share"] >= 50:
+        place = "中枢偏下" if idx < CENTER else "中枢附近"
+        lines.append(f"悲观档占流量权重{stats['neg_share']}%，情绪指数{idx}仍处{place}，"
+                     "警惕恐慌继续放大")
+    # ② 极端标题计数与下轨距离
+    if stats["extreme_count"]:
+        tail = ("已进入极度恐慌区，波动或放大" if idx <= RAIL_LOW
+                else f"恐慌若加速或快速逼近下轨{RAIL_LOW}")
+        lines.append(f"极度恐慌标题已现（{stats['extreme_count']}条），{tail}")
+    # ③ 主题集中度
+    if stats["top_theme"] and stats["top_theme_share"] >= 15:
+        lines.append(f"{_theme_short(stats['top_theme'])}主题占流量{stats['top_theme_share']}%居首，"
+                     "相关叙事集中、板块承压")
+    # ④ 避险/宏观扰动信号（只点名快照标题里真实出现的信号词）
+    haven = stats["signals"]["haven"]
+    if haven["count"] >= 2:
+        words = "、".join(haven["words"][:2])
+        lines.append(f"{words}等避险信号叠加（{haven['count']}条），构成宏观扰动诱因")
+    # ⑤ 上轨纪律
+    if idx >= RAIL_HIGH:
+        lines.append(f"情绪指数{idx}已过上轨{RAIL_HIGH}极度贪婪区，需考虑分批止盈、勿追高")
+    elif idx >= 60:
+        lines.append(f"情绪指数{idx}距上轨{RAIL_HIGH}仅{RAIL_HIGH - idx}点，冲高后需防获利回吐")
+    else:
+        lines.append(f"情绪过热上轨{RAIL_HIGH}未至，但反弹时需防乐观情绪快速冲高后回落")
+    # 兜底只用事实计数，不编造
+    n = int(agg.get("n") or stats["n"])
+    neutral = int(agg.get("neu") or 0)
+    if len(lines) < 2 and neutral:
+        lines.append(f"中性样本 {neutral}/{n or neutral} 条，方向信号仍需后续数据确认")
+    if len(lines) < 2 and idx < CENTER:
+        lines.append(f"空头概率 {100 - idx}%，整体情绪锚点位于中枢下方")
+    return list(dict.fromkeys(lines))[:5]
+
+
+def _opportunity_lines(stats: dict[str, Any], agg: dict[str, Any]) -> list[str]:
+    """机会点：与风险点同一框架——轨道距离、逆向与配置线索、正面催化占比。"""
+    idx = int(stats["index"])
+    lines: list[str] = []
+    # ① 指数位置与下轨缓冲
+    dist = idx - RAIL_LOW
+    place = "中枢偏下" if idx < CENTER else "中枢偏上" if idx > CENTER else "中枢附近"
+    if idx <= RAIL_LOW:
+        lines.append(f"情绪指数{idx}已处≤{RAIL_LOW}极度恐慌区，可寻找左侧买点")
+    elif dist <= 15:
+        lines.append(f"情绪指数距下轨{RAIL_LOW}仅差{dist}点，若触及极度恐慌可寻找左侧买点")
+    else:
+        lines.append(f"情绪指数{idx}处{place}，距下轨{RAIL_LOW}尚有{dist}点缓冲空间")
+    # ② 逆向线索
+    contrarian = stats["signals"]["contrarian"]
+    if contrarian["count"]:
+        lines.append(f"逢低布局类内容已现（{contrarian['count']}条），逆向线索浮现")
+    # ③ 理性配置需求
+    allocation = stats["signals"]["allocation"]
+    if allocation["count"]:
+        lines.append(f"资产配置与检视类内容出现（{allocation['count']}条），显示理性配置需求")
+    # ④ 正面催化主题
+    if stats["top_pos_theme"] and stats["top_pos_theme_share"] >= 8:
+        lines.append(f"{_theme_short(stats['top_pos_theme'])}等乐观催化占流量"
+                     f"{stats['top_pos_theme_share']}%，仍被部分内容提及")
+    # ⑤ 正面样本扩散跟踪
+    n = int(agg.get("n") or stats["n"])
+    pos = int(agg.get("pos") or 0)
+    if pos:
+        lines.append(f"正面样本 {pos}/{n} 条，可继续跟踪其是否扩散为板块主线")
+    if len(lines) < 2 and idx >= CENTER:
+        lines.append(f"多头概率 {idx}%，关注热点中获得多源印证的正面催化")
+    if len(lines) < 1:
+        lines.append("正面样本暂未形成高置信机会主线，等待多源交叉确认")
+    return list(dict.fromkeys(lines))[:5]
 
 
 def _fallback_columns(snapshot: dict[str, Any]) -> tuple[list[dict[str, Any]], list[str], list[str]]:
     items = _dedupe_items(snapshot.get("items") or [])
-    topics = _topic_rows(items)
-    risks = _directional_lines(items, positive=False)
-    opportunities = _directional_lines(items, positive=True)
-
     agg = snapshot.get("agg") or {}
-    n = int(agg.get("n") or len(items))
-    pos = int(agg.get("pos") or 0)
-    neg = int(agg.get("neg") or 0)
-    neutral = int(agg.get("neu") or max(0, n - pos - neg))
-    long_p = int(agg.get("综合多头概率锚点") or 50)
-
-    if not risks:
-        risks.append("负面样本暂未形成集中主线，仍需留意突发消息与数据缺口")
-    if neutral and len(risks) < 5:
-        risks.append(f"中性样本 {neutral}/{n or neutral} 条，方向信号仍需后续数据确认")
-    if long_p < 50 and len(risks) < 5:
-        risks.append(f"空头概率 {100 - long_p}%，整体情绪锚点位于中枢下方")
-
-    if not opportunities:
-        opportunities.append("正面样本暂未形成高置信机会主线，等待多源交叉确认")
-    if pos and len(opportunities) < 5:
-        opportunities.append(f"正面样本 {pos}/{n} 条，可继续跟踪其是否扩散为板块主线")
-    if long_p >= 50 and len(opportunities) < 5:
-        opportunities.append(f"多头概率 {long_p}%，关注热点中获得多源印证的正面催化")
-
-    return topics[:6], list(dict.fromkeys(risks))[:5], list(dict.fromkeys(opportunities))[:5]
+    long_p = max(5, min(95, int(round(float(agg.get("综合多头概率锚点") or 50)))))
+    stats = _column_stats(items, long_p)
+    return _topic_rows(items)[:6], _risk_lines(stats, agg), _opportunity_lines(stats, agg)
 
 
 def _extract_json(text: str) -> dict[str, Any] | None:
@@ -265,7 +420,9 @@ def _valid_ai_columns(value: dict[str, Any] | None) -> tuple[list[dict[str, Any]
             continue
         if not text:
             continue
-        row: dict[str, Any] = {"text": _clip(text, 48), "sentiment": sentiment[:8]}
+        if sentiment not in SENTIMENT_TIERS:
+            sentiment = "中性观察"
+        row: dict[str, Any] = {"text": _clip(text, 48), "sentiment": sentiment}
         try:
             if weight is not None and math.isfinite(float(weight)):
                 row["weight"] = round(max(0.0, min(100.0, float(weight))), 1)
@@ -333,15 +490,20 @@ def _ai_columns(module: Any, snapshot: dict[str, Any], long_p: int,
         return None
 
     # Highest-ranked facts only: enough context for compression, bounded cost.
-    items = sorted(_dedupe_items(snapshot.get("items") or []),
-                   key=lambda row: row.get("rank", 0), reverse=True)[:70]
+    deduped = _dedupe_items(snapshot.get("items") or [])
+    items = sorted(deduped, key=lambda row: row.get("rank", 0), reverse=True)[:70]
+    stats = _column_stats(deduped, long_p)
     facts = "\n".join(
         f"- [{row.get('label', '中性')} {float(row.get('score') or 0):+.2f}] "
         f"{_clip(row.get('title', ''), 90)}（{_plain(row.get('source'))}）"
         for row in items
     )
-    prompt = f"""你是财经研报编辑。只根据下列仓库007本轮采集事实，压缩成墨水屏栏目。
-不得新增事实、点位、评级或买卖建议。已由007本地模型计算：多头概率 {long_p}%，空头概率 {100-long_p}%。
+    prompt = f"""你是财经研报编辑。只根据下列仓库007本轮采集事实与统计，压缩成墨水屏栏目，栏目逻辑与007微信版一致。
+不得新增事实、点位、评级或买卖建议；引用的数字只能来自下方统计。
+
+统计（007本地模型）：情绪指数（多头概率）{long_p}，空头 {100-long_p}；中枢 {CENTER}，下轨 {RAIL_LOW}（极度恐慌区），上轨 {RAIL_HIGH}（极度贪婪区）。
+各情绪档流量占比%：{json.dumps(stats["tier_share"], ensure_ascii=False)}；极度恐慌标题 {stats["extreme_count"]} 条；
+首位主题 {stats["top_theme"] or "无"} 占 {stats["top_theme_share"]}%。
 
 严格只输出一个 JSON 对象，不要代码围栏：
 {{
@@ -349,7 +511,8 @@ def _ai_columns(module: Any, snapshot: dict[str, Any], long_p: int,
   "risks": ["风险点，最多42字"],
   "opportunities": ["机会线索，最多42字"]
 }}
-要求：topics 3至6条，risks 2至5条，opportunities 2至5条；weight 是相对关注度，0至100，可不合计100；机会写研究线索而非买点。
+要求：topics 3至6条，weight 为该热点在全部采集中的流量占比，按权重降序；risks/opportunities 各 3至5条，
+写由统计推导的分析句（如某档占流量%、指数距上下轨点数、主题集中、避险或配置信号），不要把原始标题逐条回声当作风险/机会；机会写研究线索而非买点。
 
 事实：
 {facts}"""
@@ -372,6 +535,11 @@ def _edition(now: datetime, requested: str) -> str:
     return "早报" if now.hour < 13 else "晚报"
 
 
+def _session_topic(edition: str) -> str:
+    """007 market-brief uses 全球市场早报/晚报 as the collection topic."""
+    return SESSION_TOPICS.get(edition, "全球市场每日研报")
+
+
 def _source_commit(source_dir: Path) -> str:
     try:
         return subprocess.check_output(
@@ -382,14 +550,15 @@ def _source_commit(source_dir: Path) -> str:
         return ""
 
 
-def collect_snapshot(source_dir: Path, hours: int, timeout: int) -> dict[str, Any]:
+def collect_snapshot(source_dir: Path, hours: int, timeout: int,
+                     topic: str = "全球市场每日研报") -> dict[str, Any]:
     if not (source_dir / "pushplus_deepseek.py").exists():
         raise SystemExit(f"007 source not found: {source_dir / 'pushplus_deepseek.py'}")
     sys.path.insert(0, str(source_dir))
     # Keep the checkout on sys.path until process exit: 007 lazily imports
     # inference_api and several collector helpers after collect_feeds returns.
     module = importlib.import_module("pushplus_deepseek")
-    pack = module.collect_feeds(hours, timeout, topic="全球市场每日研报")
+    pack = module.collect_feeds(hours, timeout, topic=topic)
 
     flat: list[dict[str, Any]] = []
     for source, rows in (pack.items or {}).items():
@@ -406,6 +575,7 @@ def collect_snapshot(source_dir: Path, hours: int, timeout: int) -> dict[str, An
         "agg": dict(pack.agg or {}),
         "items": flat,
         "errors": [_plain(x) for x in (pack.errors or []) if _plain(x)],
+        "topic": topic,
         "_source_commit": _source_commit(source_dir),
     }
 
@@ -430,10 +600,8 @@ def build_report(snapshot: dict[str, Any], *, now: datetime | None = None,
         columns = _fallback_columns(snapshot)
     topics, risks, opportunities = columns
 
-    label = ("积极乐观" if long_p >= 70 else
-             "谨慎乐观" if long_p >= 55 else
-             "谨慎悲观" if long_p <= 45 else
-             "中性观察")
+    label = _stance_label(long_p)
+    engine = "DeepSeek 多空推理" if analysis == "007-inference" else "007本地情绪模型"
     errors = snapshot.get("errors") or []
     report = {
         "schema": SCHEMA_VERSION,
@@ -456,7 +624,7 @@ def build_report(snapshot: dict[str, Any], *, now: datetime | None = None,
             "long": long_p,
             "short": 100 - long_p,
             "label": label,
-            "note": f"基于仓库007本轮 {n} 条内容 · {source_count} 源",
+            "note": f"基于 {n} 条内容 · {engine}",
         },
         "topics": topics[:6],
         "risks": risks[:5],
@@ -490,8 +658,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-ai", action="store_true", help="force deterministic 007 reducer")
     args = parser.parse_args(argv)
 
+    now = datetime.fromisoformat(args.now) if args.now else datetime.now(HKT)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=HKT)
+
     if args.source_dir:
-        snapshot = collect_snapshot(args.source_dir.resolve(), args.hours, args.timeout)
+        # 紧跟 007 本体：同一版次用同一采集主题（全球市场早报/晚报）、同一 24h 窗口。
+        topic = _session_topic(_edition(now, args.edition))
+        snapshot = collect_snapshot(args.source_dir.resolve(), args.hours,
+                                    args.timeout, topic=topic)
     else:
         snapshot = _load_snapshot(args.snapshot)
     commit = _plain(snapshot.get("_source_commit"))
@@ -505,9 +680,6 @@ def main(argv: list[str] | None = None) -> int:
     # Inference is deliberately available only in snapshot mode. This lets CI run
     # mutable code from 007 without exposing an API key in the same process.
     module = _DirectDeepSeek if (args.snapshot and not args.no_ai) else None
-    now = datetime.fromisoformat(args.now) if args.now else datetime.now(HKT)
-    if now.tzinfo is None:
-        now = now.replace(tzinfo=HKT)
     report = build_report(snapshot, now=now, edition=args.edition,
                           source_commit=commit, module=module, timeout=args.timeout)
 
