@@ -6,6 +6,14 @@ on:
   push:
     branches: ["main"]
 
+  # 007 同步工作流用默认 GITHUB_TOKEN 提交 data/007-report.json，
+  # 这种提交不会触发 push 事件（GitHub 防递归机制），页面会一直停在旧数据上。
+  # 因此这里显式跟随同步工作流完成后再部署一次，保证线上 JSON 与 main 一致。
+  workflow_run:
+    workflows: ["同步 007 · 每日研报两更"]
+    types: [completed]
+    branches: ["main"]
+
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
 
@@ -24,6 +32,11 @@ concurrency:
 jobs:
   # Single deploy job since we're just deploying
   deploy:
+    # workflow_run 也会在同步失败时触发；只部署 main 上成功的同步结果。
+    if: >-
+      github.event_name != 'workflow_run' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
@@ -31,6 +44,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # workflow_run 默认检出的是同步工作流运行时的那次提交；
+          # 这里固定取默认分支最新提交（含刚提交的 007 数据）。
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_branch || github.ref }}
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload artifact

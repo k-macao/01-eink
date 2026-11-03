@@ -153,10 +153,14 @@ test('小屏候选是完整栏目内容，不依赖硬截断', () => {
     assert.strictEqual(line.alts[0], line.text);
     assert.ok(line.alts.every(Boolean));
   }
-  const topics = card.lines[1];
-  assert.ok(topics.alts.length >= 4, '热点应能逐级缩到 1 条');
-  assert.ok(topics.alts.includes(call('completeClause', REPORT.topics[0].text)));
-  assert.ok(topics.alts.includes(call('completeClause', REPORT.topics[1].text)),
+  // 屏上只有风险点 / 机会点两栏（热点话题不上屏），第二栏即机会点。
+  // 原始 JSON 里两栏是字符串数组，标准化后的对象才带 text 字段。
+  const parsed = call('parse007Report', REPORT_TEXT);
+  const opportunities = card.lines[1];
+  assert.strictEqual(opportunities.label, '机会点');
+  assert.ok(opportunities.alts.length >= 4, '机会点应能逐级缩到 1 条');
+  assert.ok(opportunities.alts.includes(call('completeClause', parsed.opportunities[0].text)));
+  assert.ok(opportunities.alts.includes(call('completeClause', parsed.opportunities[1].text)),
     '窄屏应可选择下一条完整短句');
 });
 
