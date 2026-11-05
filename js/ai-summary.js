@@ -348,7 +348,7 @@ function buildCalendarCard(report, now) {
     };
   }).filter(l => l.text.replace(/★/g, '').trim());
   if (!lines.length) {
-    lines.push({ label: '财经日历', text: '未来 7 天暂无日程', alts: ['暂无日程'] });
+    lines.push({ label: '财经日历', text: '暂无日程或数据暂缺', alts: ['暂无日程'] });
   }
   return {
     id: ((report && report.id) || 'calendar') + '-cal',

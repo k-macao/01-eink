@@ -510,6 +510,7 @@ test('buildCard(null) 安全返回空卡，页头仍使用新标题', () => {
 
 test('parse007Report 透传财经日历（可选，缺失时为空表）', () => {
   const base = JSON.parse(REPORT_TEXT);
+  delete base.calendar;
   const parsed = call('parse007Report', JSON.stringify(base));
   assert.strictEqual(parsed.calendar.length, 0);
   const withCal = { ...base, calendar: [
