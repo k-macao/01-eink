@@ -336,12 +336,17 @@ function buildCalendarCard(report, now) {
   const date = (report && report.date) ||
     (d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
   const events = (report && Array.isArray(report.calendar)) ? report.calendar : [];
-  const lines = events.slice(0, 12).map(ev => ({
-    label: ((ev.date || '').slice(5) || '--') + (ev.time ? ' ' + ev.time : ''),
-    labelColor: 'red',
-    text: '★'.repeat(ev.stars || 1) + ' ' + ev.text,
-    alts: [ev.text],
-  }));
+  // 日历抓取来自东方财富财经日历，但屏上不显示源头：剥掉任何来源字样
+  const stripSource = t => String(t || '').replace(/东方财富|东财/g, '').replace(/\s{2,}/g, ' ').trim();
+  const lines = events.slice(0, 12).map(ev => {
+    const name = stripSource(ev.text);
+    return {
+      label: stripSource(((ev.date || '').slice(5) || '--') + (ev.time ? ' ' + ev.time : '')),
+      labelColor: 'red',
+      text: '★'.repeat(ev.stars || 1) + ' ' + name,
+      alts: [name],
+    };
+  }).filter(l => l.text.replace(/★/g, '').trim());
   if (!lines.length) {
     lines.push({ label: '财经日历', text: '未来 7 天暂无日程', alts: ['暂无日程'] });
   }
