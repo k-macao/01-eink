@@ -312,6 +312,79 @@ function buildCard(report) {
   };
 }
 
+// ---------- 仅时间节点卡片（屏上只显示推送时间点） ----------
+
+/** 由 HH:MM 列表算出「下一个未来时间节点」：今天已过的节点顺延到明天。 */
+function nextTimeNode(times, now) {
+  const list = (Array.isArray(times) ? times : []).filter(t => /^\d{2}:\d{2}$/.test(String(t)));
+  if (!list.length) return '';
+  const d = now instanceof Date ? now : new Date();
+  for (const clock of list) {
+    const parts = String(clock).split(':').map(Number);
+    const today = new Date(d.getFullYear(), d.getMonth(), d.getDate(), parts[0], parts[1], 0, 0);
+    if (today.getTime() > d.getTime()) return '今日 ' + clock;
+  }
+  return '明日 ' + list[0];
+}
+
+/** 读取 main.js 里「每天两次自动显示」配置的时间点，未加载时用默认档。 */
+function currentAutoTimes() {
+  try {
+    if (typeof autoUpdateTimes !== 'undefined' && Array.isArray(autoUpdateTimes) && autoUpdateTimes.length) {
+      return autoUpdateTimes.slice();
+    }
+  } catch (_) { /* main.js 未加载时使用默认值 */ }
+  return ['09:15', '17:15'];
+}
+
+/** 屏上只显示时间点：早报 / 晚报节点 + 下一个未来时间节点。 */
+function buildTimePointsCard(times, now) {
+  const list = (Array.isArray(times) && times.length ? times : ['09:15', '17:15'])
+    .filter(t => /^\d{2}:\d{2}$/.test(String(t)))
+    .slice(0, 2);
+  if (!list.length) list.push('09:15', '17:15');
+  const labels = ['早报', '晚报'];
+  // 时间点用红色墨水，标签保持黑色
+  const lines = list.map((clock, i) => ({ label: labels[i] || '时段', text: clock, alts: [clock], color: 'red' }));
+  const next = nextTimeNode(list, now);
+  if (next) lines.push({ label: '下一个', text: next, alts: [next], color: 'red' });
+  const d = now instanceof Date ? now : new Date();
+  const date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
+    String(d.getDate()).padStart(2, '0');
+  return { id: 'timepoints-' + date + '-' + list.join('-'), date: date, redDate: true, section: '时间节点', lines: lines };
+}
+
+/** 只预览「时间节点」卡片，不下发蓝牙。 */
+async function previewTimePoints() {
+  const canvas = document.getElementById('sum-preview');
+  try {
+    await ensureSummaryFont();
+    const card = buildTimePointsCard(currentAutoTimes(), new Date());
+    const { layout, opts } = renderSummaryToCanvas(canvas, card);
+    canvas.style.display = 'block';
+    applySumZoom(canvas);
+    sumStatus('时间节点预览（' + card.date + '）· ' + describeLayout(layout, opts));
+    if (typeof addLog === 'function') addLog('时间节点预览：' + card.lines.map(l => l.label + ' ' + l.text).join('，'));
+    return card;
+  } catch (e) {
+    sumStatus('时间节点预览失败：' + e.message);
+    return null;
+  }
+}
+
+/** 推送「仅时间节点」卡片到墨水屏。 */
+async function pushTimePoints() {
+  return withPushGuard('btn-push-timepoints', '时间节点', async () => {
+    const card = await previewTimePoints();
+    if (!card) return;
+    const canvas = document.getElementById('sum-preview');
+    addLog('时间节点：' + card.lines.map(l => l.label + ' ' + l.text).join('，'));
+    // 时间节点固定走红色墨水层，不依赖「三色」复选框
+    await pushCanvas(canvas, '时间节点', true);
+    sumStatus('已推送时间节点（' + card.date + '），屏幕刷新中');
+  });
+}
+
 // ---------- 渲染 ----------
 
 /**
@@ -334,6 +407,9 @@ const SUM_SIZE_SCALE = {
 
 const SUM_WEB_FONT = 'Alibaba PuHuiTi 3';
 let sumFontLoadPromise = null;
+
+/** 三色屏的红色墨水；canvasToLayers 用 r>160 且 r>g>b 识别红像素，此色可被判红。 */
+const SUM_RED = '#E02020';
 
 /** Canvas 必须等 WebFont 就绪后再量字，否则首屏会悄悄落到系统字体。 */
 function ensureSummaryFont() {
@@ -615,7 +691,7 @@ function drawCard(ctx, card, w, h, opts) {
   const boldAt = size => sumBold(size, opts);
 
   // alts：该条的「逐级更短候选」，小屏放不下时整句换短，而不是腰斩
-  const source = card.lines.map(l => ({ label: l.label, text: l.text, alts: l.alts || [] }));
+  const source = card.lines.map(l => ({ label: l.label, text: l.text, alts: l.alts || [], color: l.color }));
   const squeezeText = t => String(t).replace(/\s+/g, '');
 
   const totalChars = source.reduce((a, it) => a + squeezeText(it.text).length, 0) || 1;
@@ -728,7 +804,7 @@ function drawCard(ctx, card, w, h, opts) {
       }
       budget -= lines.length;
       blocks.push({
-        item: { label: s.item.label, text },
+        item: { label: s.item.label, text, color: s.item.color },
         labelW: s.m.labelW, labelSize, wrapped: lines, lineH, blockH: lines.length * lineH,
       });
     }
@@ -815,9 +891,11 @@ function drawCard(ctx, card, w, h, opts) {
   ctx.font = cardFont(titleSize, opts, boldAt(titleSize));
   ctx.fillText(REPORT_TITLE, pad, pad);
 
-  // 日期 / 007 版次
+  // 日期 / 007 版次：时间日期用红色墨水（card.redDate），版次保持黑色
   ctx.font = cardFont(headSize, opts, false);
+  ctx.fillStyle = card.redDate ? SUM_RED : '#000000';
   ctx.fillText(card.date || '', pad, headTop);
+  ctx.fillStyle = '#000000';
   const sectionText = card.section || '007';
   ctx.fillText(sectionText, w - pad - ctx.measureText(sectionText).width, headTop);
 
@@ -829,13 +907,17 @@ function drawCard(ctx, card, w, h, opts) {
   layout.blocks.forEach((b, i) => {
     if (i > 0) y += layout.blockGap;
     ctx.font = cardFont(b.labelSize, opts, boldAt(b.labelSize));
+    ctx.fillStyle = '#000000';
     ctx.fillText(b.item.label, pad, y + Math.round((layout.bodySize - b.labelSize) * 0.1));
     ctx.font = cardFont(layout.bodySize, opts, boldAt(layout.bodySize));
+    // 时间点内容用红色墨水（item.color === 'red'），标签始终黑色
+    ctx.fillStyle = b.item.color === 'red' ? SUM_RED : '#000000';
     let ty = y;
     for (const ln of b.wrapped) {
       ctx.fillText(stripBreakSep(ln), pad + b.labelW, ty);
       ty += b.lineH;
     }
+    ctx.fillStyle = '#000000';
     y += b.blockH;
   });
 
@@ -1061,9 +1143,10 @@ async function sendImageLayer(data, isBw, onProgress) {
  * 把当前画布按 EPD-nRF5 图像协议推给设备：
  * INIT → 黑白层（→ 红色层）→ REFRESH
  */
-async function pushCanvas(canvas, tag) {
+async function pushCanvas(canvas, tag, forceRed) {
   const size = getSumSize();
-  const useRed = !!(document.getElementById('sum-color') && document.getElementById('sum-color').checked);
+  const useRed = forceRed === true ||
+    !!(document.getElementById('sum-color') && document.getElementById('sum-color').checked);
   const ctx = canvas.getContext('2d');
   const { bw, red } = canvasToLayers(ctx, size.w, size.h);
 

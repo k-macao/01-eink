@@ -37,7 +37,7 @@ function createStubContext(w, h) {
     _w: w,
     _h: h,
     measureText(s) { return { width: measuredWidth(s, ctx.font) }; },
-    fillText(t, x, y) { ctx.texts.push({ text: String(t), x, y, font: ctx.font }); },
+    fillText(t, x, y) { ctx.texts.push({ text: String(t), x, y, font: ctx.font, fillStyle: ctx.fillStyle }); },
     fillRect(x, y, rw, rh) { ctx.rects.push({ x, y, w: rw, h: rh }); },
     getImageData() { return { data: new Uint8ClampedArray(w * h * 4).fill(255) }; },
     save() {}, restore() {}, translate() {}, rotate() {}, drawImage() {},
@@ -506,4 +506,39 @@ test('buildCard(null) 安全返回空卡，页头仍使用新标题', () => {
   assert.strictEqual(layout.blocks.length, 0);
   assert.ok(ctx.texts.some(item => item.text === '章鱼 AI.每日研报'));
   assert.ok(ctx.texts.some(item => item.text.includes('仅供参考')));
+});
+
+test('nextTimeNode 返回今天尚未到达的下一个时间节点，全部已过则顺延到明天', () => {
+  const at = (h, m) => new Date(2026, 10, 6, h, m, 0, 0);
+  assert.strictEqual(call('nextTimeNode', ['09:15', '17:15'], at(8, 0)), '今日 09:15');
+  assert.strictEqual(call('nextTimeNode', ['09:15', '17:15'], at(12, 0)), '今日 17:15');
+  assert.strictEqual(call('nextTimeNode', ['09:15', '17:15'], at(18, 0)), '明日 09:15');
+  assert.strictEqual(call('nextTimeNode', [], at(8, 0)), '');
+});
+
+test('buildTimePointsCard 只含时间点，时间内容标记红色、日期标红', () => {
+  const now = new Date(2026, 10, 6, 12, 0, 0, 0);
+  const card = call('buildTimePointsCard', ['09:15', '17:15'], now);
+  assert.strictEqual(card.section, '时间节点');
+  assert.strictEqual(card.redDate, true);
+  assert.deepStrictEqual(card.lines.map(l => l.label), ['早报', '晚报', '下一个']);
+  assert.deepStrictEqual(card.lines.map(l => l.text), ['09:15', '17:15', '今日 17:15']);
+  assert.ok(card.lines.every(l => l.color === 'red'));
+});
+
+test('drawCard 把时间节点内容和日期画成红色，标签保持黑色', () => {
+  const now = new Date(2026, 10, 6, 12, 0, 0, 0);
+  const card = call('buildTimePointsCard', ['09:15', '17:15'], now);
+  const ctx = createStubContext(400, 300);
+  call('drawCard', ctx, card, 400, 300, { bodySize: 13 });
+  const dateText = ctx.texts.find(t => t.text === card.date);
+  assert.ok(dateText, '应画出日期');
+  assert.strictEqual(dateText.fillStyle, '#E02020');
+  for (const line of card.lines) {
+    const hit = ctx.texts.find(t => t.text === line.text);
+    assert.ok(hit, '应画出时间点 ' + line.text);
+    assert.strictEqual(hit.fillStyle, '#E02020');
+  }
+  const label = ctx.texts.find(t => t.text === '早报');
+  assert.strictEqual(label.fillStyle, '#000000');
 });
