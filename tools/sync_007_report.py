@@ -794,8 +794,14 @@ def main(argv: list[str] | None = None) -> int:
     # Inference is deliberately available only in snapshot mode. This lets CI run
     # mutable code from 007 without exposing an API key in the same process.
     module = _DirectDeepSeek if (args.snapshot and not args.no_ai) else None
+    # The snapshot-output run produces an intermediate report only; fetch once
+    # in the final render, where the published report is actually written.
+    calendar = [] if args.snapshot_output else fetch_calendar(now.astimezone(HKT))
     report = build_report(snapshot, now=now, edition=args.edition,
-                          source_commit=commit, module=module, timeout=args.timeout)
+                          source_commit=commit, module=module, timeout=args.timeout,
+                          calendar=calendar)
+    if not args.snapshot_output:
+        print(f"财经日历：{len(calendar)} 条")
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -2,6 +2,7 @@ import importlib.util
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
@@ -124,10 +125,14 @@ class Sync007ReportTests(unittest.TestCase):
             snap = Path(td) / "snapshot.json"
             out = Path(td) / "report.json"
             snap.write_text(json.dumps(fixture_snapshot(), ensure_ascii=False), encoding="utf-8")
-            code = SYNC.main([
-                "--snapshot", str(snap), "--output", str(out), "--no-ai",
-                "--now", "2026-10-24T09:10:00+08:00",
-            ])
+            events = [{"date": "2026-10-25", "time": "22:00", "name": "美国 CPI", "stars": 3}]
+            with patch.object(SYNC, "fetch_calendar", return_value=events) as fetch:
+                code = SYNC.main([
+                    "--snapshot", str(snap), "--output", str(out), "--no-ai",
+                    "--now", "2026-10-24T09:10:00+08:00",
+                ])
+            fetch.assert_called_once_with(datetime(2026, 10, 24, 9, 10, tzinfo=HKT))
+            self.assertEqual(json.loads(out.read_text(encoding="utf-8"))["calendar"], events)
             self.assertEqual(code, 0)
             saved = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(saved["title"], "章鱼 AI.每日研报")
