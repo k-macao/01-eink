@@ -562,3 +562,21 @@ test('drawCard 把日历日期时间和页头日期画成红色，事件名称�
   assert.ok(name, '应画出事件名称');
   assert.strictEqual(name.fillStyle, '#000000');
 });
+
+test('财经日历卡片不显示数据源（东方财富）', () => {
+  const report = call('parse007Report', JSON.stringify({
+    ...JSON.parse(REPORT_TEXT),
+    calendar: [
+      { date: '2026-11-07', time: '22:00', name: '东方财富美国 非农就业人数', stars: 3 },
+      { date: '2026-11-09', time: '03:00', name: '美国 CPI', stars: 2 },
+    ],
+  }));
+  const card = call('buildCalendarCard', report, new Date(2026, 10, 6, 12, 0, 0, 0));
+  assert.strictEqual(card.section, '财经日历');
+  const all = JSON.stringify(card);
+  assert.ok(!all.includes('东方财富'), '卡片任何字段都不应出现东方财富');
+  assert.ok(card.lines[0].text.includes('美国 非农就业人数'));
+  const ctx = createStubContext(400, 300);
+  call('drawCard', ctx, card, 400, 300, { bodySize: 13 });
+  assert.ok(!ctx.texts.some(t => t.text.includes('东方财富')), '画出的文字不应包含东方财富');
+});
