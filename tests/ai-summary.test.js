@@ -508,37 +508,57 @@ test('buildCard(null) 安全返回空卡，页头仍使用新标题', () => {
   assert.ok(ctx.texts.some(item => item.text.includes('仅供参考')));
 });
 
-test('nextTimeNode 返回今天尚未到达的下一个时间节点，全部已过则顺延到明天', () => {
-  const at = (h, m) => new Date(2026, 10, 6, h, m, 0, 0);
-  assert.strictEqual(call('nextTimeNode', ['09:15', '17:15'], at(8, 0)), '今日 09:15');
-  assert.strictEqual(call('nextTimeNode', ['09:15', '17:15'], at(12, 0)), '今日 17:15');
-  assert.strictEqual(call('nextTimeNode', ['09:15', '17:15'], at(18, 0)), '明日 09:15');
-  assert.strictEqual(call('nextTimeNode', [], at(8, 0)), '');
+test('parse007Report 透传财经日历（可选，缺失时为空表）', () => {
+  const base = JSON.parse(REPORT_TEXT);
+  const parsed = call('parse007Report', JSON.stringify(base));
+  assert.strictEqual(parsed.calendar.length, 0);
+  const withCal = { ...base, calendar: [
+    { date: '2026-11-07', time: '22:00', name: '美国 非农就业人数', stars: 3 },
+    { date: '2026-11-08', time: '', name: '美联储 利率决议', stars: 99 },
+    { name: '' },
+  ] };
+  const p2 = call('parse007Report', JSON.stringify(withCal));
+  assert.strictEqual(p2.calendar.length, 2);
+  assert.strictEqual(p2.calendar[0].text, '美国 非农就业人数');
+  assert.strictEqual(p2.calendar[0].stars, 3);
+  assert.strictEqual(p2.calendar[1].stars, 3, '星级封顶 3 星');
 });
 
-test('buildTimePointsCard 只含时间点，时间内容标记红色、日期标红', () => {
-  const now = new Date(2026, 10, 6, 12, 0, 0, 0);
-  const card = call('buildTimePointsCard', ['09:15', '17:15'], now);
-  assert.strictEqual(card.section, '时间节点');
+test('buildCalendarCard 只含财经日历时间节点，不含风险点/机会点', () => {
+  const report = call('parse007Report', JSON.stringify({
+    ...JSON.parse(REPORT_TEXT),
+    calendar: [
+      { date: '2026-11-07', time: '22:00', name: '美国 非农就业人数', stars: 3 },
+      { date: '2026-11-09', time: '03:00', name: '美国 CPI', stars: 2 },
+    ],
+  }));
+  const card = call('buildCalendarCard', report, new Date(2026, 10, 6, 12, 0, 0, 0));
+  assert.strictEqual(card.section, '财经日历');
   assert.strictEqual(card.redDate, true);
-  assert.deepStrictEqual(card.lines.map(l => l.label), ['早报', '晚报', '下一个']);
-  assert.deepStrictEqual(card.lines.map(l => l.text), ['09:15', '17:15', '今日 17:15']);
-  assert.ok(card.lines.every(l => l.color === 'red'));
+  assert.strictEqual(JSON.stringify(card.lines.map(l => l.label)), JSON.stringify(['11-07 22:00', '11-09 03:00']));
+  assert.strictEqual(JSON.stringify(card.lines.map(l => l.text)), JSON.stringify(['★★★ 美国 非农就业人数', '★★ 美国 CPI']));
+  assert.ok(card.lines.every(l => l.labelColor === 'red'));
+  assert.ok(!card.lines.some(l => l.label === '风险点' || l.label === '机会点'));
+  const empty = call('buildCalendarCard', { date: '2026-11-06', calendar: [] }, new Date());
+  assert.strictEqual(empty.lines.length, 1);
+  assert.match(empty.lines[0].text, /暂无日程/);
 });
 
-test('drawCard 把时间节点内容和日期画成红色，标签保持黑色', () => {
-  const now = new Date(2026, 10, 6, 12, 0, 0, 0);
-  const card = call('buildTimePointsCard', ['09:15', '17:15'], now);
+test('drawCard 把日历日期时间和页头日期画成红色，事件名称保持黑色', () => {
+  const report = call('parse007Report', JSON.stringify({
+    ...JSON.parse(REPORT_TEXT),
+    calendar: [{ date: '2026-11-07', time: '22:00', name: '美国 非农就业人数', stars: 3 }],
+  }));
+  const card = call('buildCalendarCard', report, new Date(2026, 10, 6, 12, 0, 0, 0));
   const ctx = createStubContext(400, 300);
   call('drawCard', ctx, card, 400, 300, { bodySize: 13 });
   const dateText = ctx.texts.find(t => t.text === card.date);
-  assert.ok(dateText, '应画出日期');
+  assert.ok(dateText, '应画出页头日期');
   assert.strictEqual(dateText.fillStyle, '#E02020');
-  for (const line of card.lines) {
-    const hit = ctx.texts.find(t => t.text === line.text);
-    assert.ok(hit, '应画出时间点 ' + line.text);
-    assert.strictEqual(hit.fillStyle, '#E02020');
-  }
-  const label = ctx.texts.find(t => t.text === '早报');
-  assert.strictEqual(label.fillStyle, '#000000');
+  const label = ctx.texts.find(t => t.text === '11-07 22:00');
+  assert.ok(label, '应画出时间节点标签');
+  assert.strictEqual(label.fillStyle, '#E02020');
+  const name = ctx.texts.find(t => t.text === '★★★ 美国 非农就业人数');
+  assert.ok(name, '应画出事件名称');
+  assert.strictEqual(name.fillStyle, '#000000');
 });

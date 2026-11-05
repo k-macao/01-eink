@@ -54,6 +54,38 @@ POSITIVE_TIERS = ("积极乐观", "谨慎乐观")
 # 与 007 market-brief 相同的版次主题：采集时刻、窗口与口径紧跟 007 本体。
 SESSION_TOPICS = {"早报": "全球市场早报", "晚报": "全球市场晚报"}
 
+# 财经日历（东方财富公开报表 RPT_CPH_FECALENDAR，无需密钥），作为「时间节点」
+# 栏目上屏；抓取失败时如实降级为空表，绝不用推算日期冒充数据源。
+CALENDAR_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+CALENDAR_REPORT = "RPT_CPH_FECALENDAR"
+CALENDAR_COLUMNS = "START_DATE,FE_NAME,CITY,FE_TYPE"
+CALENDAR_DAYS = 7          # 前瞻窗口：未来 7 天
+CALENDAR_MAX_ROWS = 12     # 小屏版面上限
+CALENDAR_KEEP_CITY = (
+    "中国", "美国", "欧元区", "欧盟", "日本", "英国", "中国香港",
+    "加拿大", "澳大利亚", "韩国", "瑞士", "新西兰", "OPEC",
+)
+CALENDAR_DROP_KW = (
+    "新股申购", "新股上市", "限售解禁", "分红", "送转", "股东大会",
+    "增持", "减持", "回购", "股权激励", "停牌", "复牌",
+)
+CALENDAR_TIER3_KW = (
+    "CPI", "PPI", "PCE", "GDP", "PMI", "非农", "失业率", "利率决议", "M2",
+    "社融", "社会融资", "新增信贷", "LPR", "MLF", "工业增加值",
+    "社会消费品零售", "进出口", "贸易帐", "外汇储备",
+    "国民经济运行情况发布会", "中央全会", "中央经济工作会议",
+    "政府工作报告", "全国人民代表大会", "政治局会议", "国务院常务会议",
+)
+CALENDAR_ORG_KW = (
+    "美联储", "联邦储备", "欧洲央行", "欧央行", "日本央行", "英国央行",
+    "瑞士央行", "加拿大央行", "澳洲联储", "新西兰联储", "韩国央行", "中国人民银行",
+)
+CALENDAR_TIER2_KW = (
+    "ISM", "初请", "ADP", "耐用品", "零售销售", "消费者信心", "EIA原油库存",
+    "EIA汽油库存", "EIA精炼油库存", "会议纪要", "鲍威尔",
+)
+CALENDAR_NOISE_TAG = ("[同传]", "（同传）", "(同传)", "【同传】")
+
 MARKET_WORDS = (
     "a股", "港股", "美股", "恒指", "恒生", "标普", "纳指", "道指", "日经",
     "股价", "股票", "指数", "市场", "资金", "成交", "基金", "券商", "银行",
@@ -580,9 +612,90 @@ def collect_snapshot(source_dir: Path, hours: int, timeout: int,
     }
 
 
+def _cal_stars(name: str) -> int:
+    if any(k in name for k in CALENDAR_TIER3_KW):
+        return 3
+    if any(k in name for k in CALENDAR_TIER2_KW):
+        return 2
+    return 1
+
+
+def _cal_clean_name(name: str, city: str) -> str:
+    name = str(name or "").strip()
+    for tag in CALENDAR_NOISE_TAG:
+        name = name.replace(tag, "")
+    # 剥掉「美国:」这类地区前缀（地区已单独成列）
+    city = str(city or "").strip()
+    if city and name.startswith(city) and len(name) > len(city):
+        rest = name[len(city):]
+        if rest[:1] in (":", "："):
+            name = rest[1:].strip()
+    return name.strip()
+
+
+def fetch_calendar(now: datetime, days: int = CALENDAR_DAYS,
+                   max_rows: int = CALENDAR_MAX_ROWS) -> list[dict[str, Any]]:
+    """抓取未来 N 天财经日历（东方财富公开接口）；任何失败都返回空表。"""
+    base = now.date()
+    end = base + timedelta(days=days)
+    flt = (f"(START_DATE>='{base.isoformat()}')"
+           f"(START_DATE<'{(end + timedelta(days=1)).isoformat()}')")
+    params = (
+        f"reportName={CALENDAR_REPORT}&columns={CALENDAR_COLUMNS}"
+        f"&filter={urllib.parse.quote(flt)}&pageNumber=1&pageSize=500"
+        f"&sortColumns=START_DATE&sortTypes=1&source=WEB&client=WEB"
+    )
+    url = f"{CALENDAR_URL}?{params}"
+    try:
+        req = urllib.request.Request(
+            url, headers={"Referer": "https://data.eastmoney.com/", "User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:  # 网络/解析失败不阻断主流程
+        print(f"  ⚠️ 财经日历暂缺：{exc}")
+        return []
+
+    result = payload.get("result") if isinstance(payload, dict) else None
+    rows = (result or {}).get("data") or [] if isinstance(result, dict) else []
+    seen: set[tuple[str, str]] = set()
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        raw_date = str(row.get("START_DATE") or "")
+        name = _cal_clean_name(str(row.get("FE_NAME") or ""), str(row.get("CITY") or ""))
+        if not raw_date or not name:
+            continue
+        if any(k in name for k in CALENDAR_DROP_KW):
+            continue
+        city = str(row.get("CITY") or "")
+        if city not in CALENDAR_KEEP_CITY and not any(k in name for k in CALENDAR_ORG_KW):
+            continue
+        try:
+            stamp = datetime.fromisoformat(raw_date.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        day = stamp.date()
+        if not (base <= day <= end):
+            continue
+        key = (day.isoformat(), re.sub(r"[\s:：()（）]", "", name))
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append({
+            "date": day.isoformat(),
+            "time": stamp.strftime("%H:%M"),
+            "name": _clip(name, 40),
+            "stars": _cal_stars(name),
+        })
+    items.sort(key=lambda it: (it["date"], it["time"]))
+    return items[:max_rows]
+
+
 def build_report(snapshot: dict[str, Any], *, now: datetime | None = None,
                  edition: str = "auto", source_commit: str = "",
-                 module: Any | None = None, timeout: int = 35) -> dict[str, Any]:
+                 module: Any | None = None, timeout: int = 35,
+                 calendar: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     now = (now or datetime.now(HKT)).astimezone(HKT)
     agg = snapshot.get("agg") or {}
     n = int(agg.get("n") or len(snapshot.get("items") or []))
@@ -629,6 +742,7 @@ def build_report(snapshot: dict[str, Any], *, now: datetime | None = None,
         "topics": topics[:6],
         "risks": risks[:5],
         "opportunities": opportunities[:5],
+        "calendar": calendar or [],
         "data_gaps": [_clip(x, 80) for x in errors[:5]],
         "disclaimer": "仅供研究参考，不构成投资建议",
     }

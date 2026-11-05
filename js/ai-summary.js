@@ -175,6 +175,18 @@ function parse007Report(payload) {
   });
   const risks = reportList(raw.risks, 5, item => ({ text: tidyItemText(typeof item === 'string' ? item : item && item.text) }));
   const opportunities = reportList(raw.opportunities, 5, item => ({ text: tidyItemText(typeof item === 'string' ? item : item && item.text) }));
+  // 财经日历为可选栏：抓取失败时为空表，不影响研报校验
+  const calendar = reportList(raw.calendar, 12, item => {
+    if (!item || typeof item !== 'object') return null;
+    const name = tidyItemText(item.name);
+    if (!name) return null;
+    return {
+      text: name,
+      date: cleanReportText(item.date),
+      time: cleanReportText(item.time),
+      stars: Math.max(1, Math.min(3, parseInt(item.stars, 10) || 1)),
+    };
+  });
 
   if (!topics.length) throw new Error('007 研报缺少热点话题');
   if (!risks.length) throw new Error('007 研报缺少风险点');
@@ -198,6 +210,7 @@ function parse007Report(payload) {
     topics,
     risks,
     opportunities,
+    calendar,
     source: src,
     disclaimer: cleanReportText(raw.disclaimer),
   };
@@ -312,76 +325,64 @@ function buildCard(report) {
   };
 }
 
-// ---------- 仅时间节点卡片（屏上只显示推送时间点） ----------
+// ---------- 财经日历卡片（时间节点：只显示日历，不显示风险点/机会点） ----------
 
-/** 由 HH:MM 列表算出「下一个未来时间节点」：今天已过的节点顺延到明天。 */
-function nextTimeNode(times, now) {
-  const list = (Array.isArray(times) ? times : []).filter(t => /^\d{2}:\d{2}$/.test(String(t)));
-  if (!list.length) return '';
+/**
+ * 屏上只显示财经日历：每条为一个未来时间节点。
+ * 日期时间用红色墨水（labelColor: 'red' + 页头 redDate），事件名称保持黑色。
+ */
+function buildCalendarCard(report, now) {
   const d = now instanceof Date ? now : new Date();
-  for (const clock of list) {
-    const parts = String(clock).split(':').map(Number);
-    const today = new Date(d.getFullYear(), d.getMonth(), d.getDate(), parts[0], parts[1], 0, 0);
-    if (today.getTime() > d.getTime()) return '今日 ' + clock;
+  const date = (report && report.date) ||
+    (d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'));
+  const events = (report && Array.isArray(report.calendar)) ? report.calendar : [];
+  const lines = events.slice(0, 12).map(ev => ({
+    label: ((ev.date || '').slice(5) || '--') + (ev.time ? ' ' + ev.time : ''),
+    labelColor: 'red',
+    text: '★'.repeat(ev.stars || 1) + ' ' + ev.text,
+    alts: [ev.text],
+  }));
+  if (!lines.length) {
+    lines.push({ label: '财经日历', text: '未来 7 天暂无日程', alts: ['暂无日程'] });
   }
-  return '明日 ' + list[0];
+  return {
+    id: ((report && report.id) || 'calendar') + '-cal',
+    date: date,
+    redDate: true,
+    section: '财经日历',
+    lines: lines,
+  };
 }
 
-/** 读取 main.js 里「每天两次自动显示」配置的时间点，未加载时用默认档。 */
-function currentAutoTimes() {
-  try {
-    if (typeof autoUpdateTimes !== 'undefined' && Array.isArray(autoUpdateTimes) && autoUpdateTimes.length) {
-      return autoUpdateTimes.slice();
-    }
-  } catch (_) { /* main.js 未加载时使用默认值 */ }
-  return ['09:15', '17:15'];
-}
-
-/** 屏上只显示时间点：早报 / 晚报节点 + 下一个未来时间节点。 */
-function buildTimePointsCard(times, now) {
-  const list = (Array.isArray(times) && times.length ? times : ['09:15', '17:15'])
-    .filter(t => /^\d{2}:\d{2}$/.test(String(t)))
-    .slice(0, 2);
-  if (!list.length) list.push('09:15', '17:15');
-  const labels = ['早报', '晚报'];
-  // 时间点用红色墨水，标签保持黑色
-  const lines = list.map((clock, i) => ({ label: labels[i] || '时段', text: clock, alts: [clock], color: 'red' }));
-  const next = nextTimeNode(list, now);
-  if (next) lines.push({ label: '下一个', text: next, alts: [next], color: 'red' });
-  const d = now instanceof Date ? now : new Date();
-  const date = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' +
-    String(d.getDate()).padStart(2, '0');
-  return { id: 'timepoints-' + date + '-' + list.join('-'), date: date, redDate: true, section: '时间节点', lines: lines };
-}
-
-/** 只预览「时间节点」卡片，不下发蓝牙。 */
-async function previewTimePoints() {
+/** 只预览「财经日历」卡片，不下发蓝牙。 */
+async function previewCalendar(force) {
   const canvas = document.getElementById('sum-preview');
   try {
+    const report = await getSummaryCard(force === true);
     await ensureSummaryFont();
-    const card = buildTimePointsCard(currentAutoTimes(), new Date());
+    const card = buildCalendarCard(report, new Date());
     const { layout, opts } = renderSummaryToCanvas(canvas, card);
     canvas.style.display = 'block';
     applySumZoom(canvas);
-    sumStatus('时间节点预览（' + card.date + '）· ' + describeLayout(layout, opts));
-    if (typeof addLog === 'function') addLog('时间节点预览：' + card.lines.map(l => l.label + ' ' + l.text).join('，'));
+    sumStatus('财经日历预览（' + card.date + '）· ' + describeLayout(layout, opts));
+    if (typeof addLog === 'function') addLog('财经日历预览：' + card.lines.map(l => l.label + ' ' + l.text).join('，'));
     return card;
   } catch (e) {
-    sumStatus('时间节点预览失败：' + e.message);
+    sumStatus('财经日历预览失败：' + e.message);
     return null;
   }
 }
 
-/** 推送「仅时间节点」卡片到墨水屏。 */
-async function pushTimePoints() {
-  return withPushGuard('btn-push-timepoints', '时间节点', async () => {
-    const card = await previewTimePoints();
+/** 推送「财经日历」卡片到墨水屏（不含风险点/机会点两栏）。 */
+async function pushCalendar() {
+  return withPushGuard('btn-push-calendar', '财经日历', async () => {
+    const card = await previewCalendar(true);
     if (!card) return;
     const canvas = document.getElementById('sum-preview');
-    addLog('时间节点：' + card.lines.map(l => l.label + ' ' + l.text).join('，'));
-    // 时间节点固定走红色墨水层，不依赖「三色」复选框
-    await pushCanvas(canvas, '时间节点', true);
-    sumStatus('已推送时间节点（' + card.date + '），屏幕刷新中');
+    addLog('财经日历：' + card.lines.map(l => l.label + ' ' + l.text).join('，'));
+    // 时间日期固定走红色墨水层，不依赖「三色」复选框
+    await pushCanvas(canvas, '财经日历', true);
+    sumStatus('已推送财经日历（' + card.date + '），屏幕刷新中');
   });
 }
 
@@ -691,7 +692,7 @@ function drawCard(ctx, card, w, h, opts) {
   const boldAt = size => sumBold(size, opts);
 
   // alts：该条的「逐级更短候选」，小屏放不下时整句换短，而不是腰斩
-  const source = card.lines.map(l => ({ label: l.label, text: l.text, alts: l.alts || [], color: l.color }));
+  const source = card.lines.map(l => ({ label: l.label, text: l.text, alts: l.alts || [], color: l.color, labelColor: l.labelColor }));
   const squeezeText = t => String(t).replace(/\s+/g, '');
 
   const totalChars = source.reduce((a, it) => a + squeezeText(it.text).length, 0) || 1;
@@ -804,7 +805,7 @@ function drawCard(ctx, card, w, h, opts) {
       }
       budget -= lines.length;
       blocks.push({
-        item: { label: s.item.label, text, color: s.item.color },
+        item: { label: s.item.label, text, color: s.item.color, labelColor: s.item.labelColor },
         labelW: s.m.labelW, labelSize, wrapped: lines, lineH, blockH: lines.length * lineH,
       });
     }
@@ -907,7 +908,8 @@ function drawCard(ctx, card, w, h, opts) {
   layout.blocks.forEach((b, i) => {
     if (i > 0) y += layout.blockGap;
     ctx.font = cardFont(b.labelSize, opts, boldAt(b.labelSize));
-    ctx.fillStyle = '#000000';
+    // 日期时间标签用红色墨水（item.labelColor === 'red'），其余标签保持黑色
+    ctx.fillStyle = b.item.labelColor === 'red' ? SUM_RED : '#000000';
     ctx.fillText(b.item.label, pad, y + Math.round((layout.bodySize - b.labelSize) * 0.1));
     ctx.font = cardFont(layout.bodySize, opts, boldAt(layout.bodySize));
     // 时间点内容用红色墨水（item.color === 'red'），标签始终黑色
