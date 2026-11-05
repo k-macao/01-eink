@@ -48,6 +48,42 @@ def fixture_snapshot():
 
 
 class Sync007ReportTests(unittest.TestCase):
+    def test_calendar_falls_back_on_empty_filtered_data_and_combines_weeks(self):
+        class Response:
+            def __init__(self, data):
+                self.data = data
+            def __enter__(self):
+                return self
+            def __exit__(self, *args):
+                pass
+            def read(self):
+                return json.dumps(self.data).encode()
+
+        responses = [Response({"result": {"data": [{"FE_NAME": "ignored"}]}}),
+                     Response({"result": {"data": []}}),
+                     Response({"result": None}),
+                     Response([{"country": "USD", "title": "CPI", "date": "2026-10-24T20:30:00-04:00", "impact": "High"}]),
+                     Response([{"country": "EUR", "title": "GDP", "date": "2026-10-27T10:00:00+00:00", "impact": "Medium"},
+                               {"country": "USD", "title": "invalid timezone", "date": "2026-10-27T10:00:00"}])]
+        with patch.object(SYNC.urllib.request, "urlopen", side_effect=responses) as fetch:
+            events = SYNC.fetch_calendar(datetime(2026, 10, 24, tzinfo=HKT))
+        self.assertEqual(fetch.call_count, 5)
+        self.assertEqual(events, [
+            {"date": "2026-10-25", "time": "08:30", "name": "美国 CPI", "stars": 3},
+            {"date": "2026-10-27", "time": "18:00", "name": "欧元区 GDP", "stars": 2},
+        ])
+
+    def test_calendar_uses_eastmoney_mirror_after_failure(self):
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self, *args): pass
+            def read(self):
+                return json.dumps({"result": {"data": [{"START_DATE": "2026-10-25 10:00:00", "CITY": "中国", "FE_NAME": "中国:CPI"}]}}).encode()
+        with patch.object(SYNC.urllib.request, "urlopen", side_effect=[OSError("offline"), Response()]) as fetch:
+            events = SYNC.fetch_calendar(datetime(2026, 10, 24, tzinfo=HKT))
+        self.assertEqual(fetch.call_count, 2)
+        self.assertEqual(events[0]["name"], "CPI")
+
     def test_build_report_contract(self):
         report = SYNC.build_report(
             fixture_snapshot(),

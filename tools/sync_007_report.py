@@ -57,6 +57,19 @@ SESSION_TOPICS = {"早报": "全球市场早报", "晚报": "全球市场晚报"
 # 财经日历（东方财富公开报表 RPT_CPH_FECALENDAR，无需密钥），作为「时间节点」
 # 栏目上屏；抓取失败时如实降级为空表，绝不用推算日期冒充数据源。
 CALENDAR_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+CALENDAR_URLS = (
+    CALENDAR_URL,
+    "https://datacenter.eastmoney.com/api/data/v1/get",
+    "https://datacenter.eastmoney.com/securities/api/data/v1/get",
+)
+# Forex Factory's public weekly feeds are an independent English-language fallback.
+FOREX_CALENDAR_URLS = (
+    "https://nfs.faireconomy.media/ff_calendar_thisweek.json",
+    "https://nfs.faireconomy.media/ff_calendar_nextweek.json",
+)
+FOREX_COUNTRIES = {"USD": "美国", "EUR": "欧元区", "GBP": "英国", "JPY": "日本",
+                   "CNY": "中国", "AUD": "澳大利亚", "CAD": "加拿大",
+                   "CHF": "瑞士", "NZD": "新西兰"}
 CALENDAR_REPORT = "RPT_CPH_FECALENDAR"
 CALENDAR_COLUMNS = "START_DATE,FE_NAME,CITY,FE_TYPE"
 CALENDAR_DAYS = 7          # 前瞻窗口：未来 7 天
@@ -635,7 +648,7 @@ def _cal_clean_name(name: str, city: str) -> str:
 
 def fetch_calendar(now: datetime, days: int = CALENDAR_DAYS,
                    max_rows: int = CALENDAR_MAX_ROWS) -> list[dict[str, Any]]:
-    """抓取未来 N 天财经日历（东方财富公开接口）；任何失败都返回空表。"""
+    """依次尝试东方财富各入口和 Forex Factory；无可用事件时返回空表。"""
     base = now.date()
     end = base + timedelta(days=days)
     flt = (f"(START_DATE>='{base.isoformat()}')"
@@ -645,18 +658,66 @@ def fetch_calendar(now: datetime, days: int = CALENDAR_DAYS,
         f"&filter={urllib.parse.quote(flt)}&pageNumber=1&pageSize=500"
         f"&sortColumns=START_DATE&sortTypes=1&source=WEB&client=WEB"
     )
-    url = f"{CALENDAR_URL}?{params}"
-    try:
-        req = urllib.request.Request(
-            url, headers={"Referer": "https://data.eastmoney.com/", "User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:  # 网络/解析失败不阻断主流程
-        print(f"  ⚠️ 财经日历暂缺：{exc}")
-        return []
+    for endpoint in CALENDAR_URLS:
+        try:
+            req = urllib.request.Request(
+                f"{endpoint}?{params}", headers={"Referer": "https://data.eastmoney.com/",
+                                                "User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                payload = json.loads(resp.read().decode("utf-8"))
+            result = payload.get("result") if isinstance(payload, dict) else None
+            rows = result.get("data") if isinstance(result, dict) else None
+            items = _calendar_eastmoney_rows(rows if isinstance(rows, list) else [], base, end, max_rows)
+            if items:
+                print(f"  📅 财经日历采用：{endpoint}（{len(items)} 条）")
+                return items
+            print(f"  ⚠️ 财经日历 {endpoint} 无可用日程，尝试备用源")
+        except Exception as exc:  # 网络/解析失败不阻断主流程
+            print(f"  ⚠️ 财经日历 {endpoint} 失败：{exc}")
 
-    result = payload.get("result") if isinstance(payload, dict) else None
-    rows = (result or {}).get("data") or [] if isinstance(result, dict) else []
+    # Both weekly files are needed when the requested window crosses a week.
+    fallback = []
+    for endpoint in FOREX_CALENDAR_URLS:
+        try:
+            req = urllib.request.Request(endpoint, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                rows = json.loads(resp.read().decode("utf-8"))
+            if not isinstance(rows, list):
+                raise ValueError("日历格式无效")
+            fallback.extend(_calendar_forex_rows(rows, base, end))
+        except Exception as exc:
+            print(f"  ⚠️ 财经日历 {endpoint} 失败：{exc}")
+    unique = {(x["date"], x["time"], x["name"]): x for x in fallback}
+    items = sorted(unique.values(), key=lambda x: (x["date"], x["time"]))[:max_rows]
+    print(f"  📅 Forex Factory 备用日历：{len(items)} 条（英文事件名称）")
+    return items
+
+
+def _calendar_forex_rows(rows: list, base, end) -> list[dict[str, Any]]:
+    items = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        country = FOREX_COUNTRIES.get(str(row.get("country") or ""))
+        name = str(row.get("title") or "").strip()
+        if not country or not name:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(row.get("date") or "").replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                continue  # Do not guess the source timezone.
+            stamp = stamp.astimezone(HKT)
+        except ValueError:
+            continue
+        if base <= stamp.date() <= end:
+            impact = str(row.get("impact") or "").lower()
+            items.append({"date": stamp.date().isoformat(), "time": stamp.strftime("%H:%M"),
+                          "name": _clip(f"{country} {name}", 40),
+                          "stars": {"high": 3, "medium": 2}.get(impact, 1)})
+    return items
+
+
+def _calendar_eastmoney_rows(rows: list, base, end, max_rows: int) -> list[dict[str, Any]]:
     seen: set[tuple[str, str]] = set()
     items: list[dict[str, Any]] = []
     for row in rows:
