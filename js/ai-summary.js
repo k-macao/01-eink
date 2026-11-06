@@ -317,6 +317,7 @@ function buildCard(report) {
   return {
     id: report.id || report.generatedAt || stamp,
     date: stamp,
+    calendar: report.calendar || [],
     section: '007' + (report.edition ? ' · ' + report.edition : ''),
     lines: [
       { label: '风险点', text: riskVariants[0], alts: riskVariants },
