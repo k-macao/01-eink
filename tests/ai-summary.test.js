@@ -473,6 +473,17 @@ test('loadSummaryCard 只读取同源 data/007-report.json', async () => {
   assert.strictEqual(card.lines.length, 2);
 });
 
+test('财经日历预览通过真实加载链路保留日程', async () => {
+  const report = JSON.parse(REPORT_TEXT);
+  report.calendar = [{ date: '2026-11-07', time: '22:00', name: '美国 非农就业人数', stars: 3 }];
+  const fresh = loadModule(async () => ({ ok: true, text: async () => JSON.stringify(report) }));
+  const card = await vm.runInContext('previewCalendar(true)', fresh.sandbox);
+  assert.ok(card);
+  assert.strictEqual(card.lines[0].label, '11-07 22:00');
+  assert.strictEqual(card.lines[0].text, '★★★ 美国 非农就业人数');
+  assert.strictEqual(card.section, '财经日历');
+});
+
 test('Canvas 绘制前等待阿里巴巴普惠体 WebFont，且只加载一次', async () => {
   const fresh = loadModule();
   await vm.runInContext('ensureSummaryFont()', fresh.sandbox);
